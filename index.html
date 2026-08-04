@@ -454,6 +454,44 @@
             <p v-if="fileName" class="mt-3 truncate text-xs font-semibold text-slate-600">已导入：{{ fileName }}</p>
             <p v-if="fileError" class="mt-3 rounded-md bg-rose-50 px-3 py-2 text-xs font-semibold leading-5 text-rose-700">{{ fileError }}</p>
           </div>
+
+          <div class="rounded-lg border border-amber-200 bg-amber-50/75 p-4">
+            <div class="mb-3">
+              <p class="text-sm font-extrabold text-slate-900">复原脱敏文件</p>
+              <p class="mt-1 text-xs leading-5 text-amber-800">上传由本工具导出的可复原 DOCX/DOC，或 PDF 打印时同步生成的 .restore.json 复原包。</p>
+            </div>
+
+            <label
+              for="restoreUpload"
+              class="flex cursor-pointer items-center justify-center rounded-lg border border-dashed border-amber-400 bg-white/80 px-4 py-3 text-sm font-extrabold text-amber-800 transition hover:bg-amber-100"
+              :class="{ 'upload-drop-active': isDraggingRestoreFile }"
+              @dragenter.prevent="isDraggingRestoreFile = true"
+              @dragover.prevent="isDraggingRestoreFile = true"
+              @dragleave.prevent="isDraggingRestoreFile = false"
+              @drop.prevent="handleRestoreDrop"
+            >
+              {{ isDraggingRestoreFile ? '释放以上传复原文件' : '选择或拖拽脱敏后文件/复原包' }}
+            </label>
+            <input
+              id="restoreUpload"
+              class="hidden"
+              type="file"
+              accept=".pdf,.doc,.docx,.json,application/pdf,application/json,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              @change="handleRestoreFile"
+            />
+            <p v-if="restoreFileName" class="mt-3 truncate text-xs font-semibold text-slate-700">复原来源：{{ restoreFileName }}</p>
+            <p v-if="restoreStatus" class="mt-3 rounded-md bg-emerald-50 px-3 py-2 text-xs font-bold leading-5 text-emerald-700">{{ restoreStatus }}</p>
+            <p v-if="restoreError" class="mt-3 rounded-md bg-rose-50 px-3 py-2 text-xs font-semibold leading-5 text-rose-700">{{ restoreError }}</p>
+            <button
+              type="button"
+              class="action-button mt-3 w-full bg-amber-600 text-white shadow-lg shadow-amber-900/10 hover:bg-amber-700"
+              :disabled="!canRestore"
+              :class="{ 'opacity-50 cursor-not-allowed': !canRestore }"
+              @click="restoreOriginalFile"
+            >
+              一键恢复原文件内容
+            </button>
+          </div>
         </div>
 
         <div class="mt-auto pt-7">
@@ -609,6 +647,12 @@
           copyStatus: "",
           exportMode: "pdf",
           isDraggingFile: false,
+          isDraggingRestoreFile: false,
+          restoreFileName: "",
+          restorePayload: null,
+          restoreStatus: "",
+          restoreError: "",
+          originalFileSnapshot: null,
           showOriginal: false,
           imageUrl: "",
           imageLoading: false,
@@ -705,6 +749,10 @@
 
         canCopy() {
           return Boolean(this.rawCopyText || this.mode === "template");
+        },
+
+        canRestore() {
+          return Boolean(this.restorePayload);
         },
 
         sourceTextForDetection() {
@@ -956,12 +1004,50 @@
           if (file) await this.importFile(file);
         },
 
-        async importFile(file) {
+        async handleRestoreFile(event) {
+          const file = event.target.files && event.target.files[0];
+          if (file) await this.importRestoreSource(file);
+          event.target.value = "";
+        },
+
+        async handleRestoreDrop(event) {
+          this.isDraggingRestoreFile = false;
+          const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+          if (file) await this.importRestoreSource(file);
+        },
+
+        async importRestoreSource(file) {
           if (!file) return;
 
-          this.clearFile(false);
+          this.restoreFileName = file.name;
+          this.restoreStatus = "";
+          this.restoreError = "";
+          this.restorePayload = null;
+
+          const lowerName = file.name.toLowerCase();
+          if (!lowerName.endsWith(".json")) {
+            await this.importFile(file, { preserveRestore: true });
+          }
+
+          const payload = await this.extractRestorePayload(file);
+          if (!payload) {
+            this.restoreError = "未找到可复原数据。请上传本工具导出的可复原 DOCX/DOC，或对应的 .restore.json 复原包。";
+            return;
+          }
+
+          this.restorePayload = payload;
+          this.restoreStatus = `已读取复原数据：${payload.sourceFileName || "原文件"}`;
+        },
+
+        async importFile(file, options = {}) {
+          if (!file) return;
+
+          this.clearFile(false, { preserveRestore: options.preserveRestore });
           this.fileName = file.name;
           this.copyStatus = "";
+          if (!options.skipSnapshot) {
+            this.originalFileSnapshot = await this.createFileSnapshot(file);
+          }
           const lowerName = file.name.toLowerCase();
 
           try {
@@ -1096,7 +1182,7 @@
           }
         },
 
-        clearFile(resetInput = true) {
+        clearFile(resetInput = true, options = {}) {
           if (this.imageUrl) URL.revokeObjectURL(this.imageUrl);
           this.mode = "template";
           this.fileName = "";
@@ -1111,6 +1197,7 @@
           this.imageTextItems = [];
           this.wordOriginalHtml = "";
           this.originalDocxFile = null;
+          this.originalFileSnapshot = null;
           this.rawCopyText = "";
           this.pdfLoading = false;
           this.pdfPages = [];
@@ -1119,10 +1206,163 @@
           this.manualSelections = [];
           this.selectionDraft = null;
           this.isDraggingFile = false;
+          this.isDraggingRestoreFile = false;
+
+          if (!options.preserveRestore) {
+            this.restoreFileName = "";
+            this.restorePayload = null;
+            this.restoreStatus = "";
+            this.restoreError = "";
+          }
 
           if (resetInput) {
             const input = document.getElementById("fileUpload");
             if (input) input.value = "";
+            const restoreInput = document.getElementById("restoreUpload");
+            if (restoreInput) restoreInput.value = "";
+          }
+        },
+
+        createFileSnapshot(file) {
+          return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve({
+              name: file.name,
+              type: file.type || "application/octet-stream",
+              kind: this.fileKind,
+              dataUrl: reader.result
+            });
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          });
+        },
+
+        buildRestorePayload(exportType) {
+          return {
+            app: "file-redactor",
+            version: 1,
+            createdAt: new Date().toISOString(),
+            sourceFileName: this.fileName || "脱敏文件",
+            sourceKind: this.fileKind,
+            exportType,
+            original: {
+              file: this.originalFileSnapshot,
+              wordOriginalHtml: this.wordOriginalHtml,
+              rawCopyText: this.rawCopyText,
+              templateRawHtml: this.mode === "template" ? this.templateRawHtml : ""
+            },
+            state: {
+              form: JSON.parse(JSON.stringify(this.form)),
+              disabledAutomaticTerms: [...this.disabledAutomaticTerms],
+              restoredOccurrences: [...this.restoredOccurrences],
+              manualSelections: JSON.parse(JSON.stringify(this.manualSelections))
+            }
+          };
+        },
+
+        validateRestorePayload(payload) {
+          return payload && payload.app === "file-redactor" && payload.version === 1 && payload.original;
+        },
+
+        encodeRestorePayload(payload) {
+          const bytes = new TextEncoder().encode(JSON.stringify(payload));
+          let binary = "";
+          const chunkSize = 0x8000;
+          for (let index = 0; index < bytes.length; index += chunkSize) {
+            binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+          }
+          return btoa(binary);
+        },
+
+        decodeRestorePayload(encoded) {
+          const binary = atob(String(encoded || "").trim());
+          const bytes = new Uint8Array(binary.length);
+          for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+          return JSON.parse(new TextDecoder().decode(bytes));
+        },
+
+        async extractRestorePayload(file) {
+          try {
+            const lowerName = file.name.toLowerCase();
+
+            if (lowerName.endsWith(".json")) {
+              const payload = JSON.parse(await file.text());
+              return this.validateRestorePayload(payload) ? payload : null;
+            }
+
+            if (lowerName.endsWith(".docx") && window.JSZip) {
+              const zip = await JSZip.loadAsync(await file.arrayBuffer());
+              const restoreEntryName = Object.keys(zip.files).find(name => /file-redactor-restore\.(?:xml|json)$/i.test(name));
+              if (!restoreEntryName) return null;
+              const restoreText = await zip.file(restoreEntryName).async("string");
+              const xmlMatch = restoreText.match(/<payload>([A-Za-z0-9+/=]+)<\/payload>/);
+              const payload = restoreEntryName.toLowerCase().endsWith(".xml")
+                ? this.decodeRestorePayload(xmlMatch && xmlMatch[1])
+                : JSON.parse(restoreText);
+              return this.validateRestorePayload(payload) ? payload : null;
+            }
+
+            if (lowerName.endsWith(".doc") || file.type === "application/msword") {
+              const text = await file.text();
+              const match = text.match(/FILE_REDACTOR_RESTORE:([A-Za-z0-9+/=]+)/);
+              if (!match) return null;
+              const payload = this.decodeRestorePayload(match[1]);
+              return this.validateRestorePayload(payload) ? payload : null;
+            }
+          } catch (error) {
+            console.error(error);
+          }
+
+          return null;
+        },
+
+        downloadRestorePackage(exportType) {
+          const payload = this.buildRestorePayload(exportType);
+          const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+          this.downloadBlob(blob, `${this.outputBaseName()}.restore.json`);
+        },
+
+        async restoreOriginalFile() {
+          if (!this.restorePayload) return;
+
+          const payload = this.restorePayload;
+          const original = payload.original || {};
+          const snapshot = original.file;
+
+          try {
+            if (snapshot && snapshot.dataUrl) {
+              const blob = await fetch(snapshot.dataUrl).then(response => response.blob());
+              const restoredFile = new File([blob], snapshot.name || payload.sourceFileName || "原文件", {
+                type: snapshot.type || blob.type || "application/octet-stream"
+              });
+              await this.importFile(restoredFile, { preserveRestore: true, skipSnapshot: true });
+              this.originalFileSnapshot = snapshot;
+            } else {
+              this.clearFile(false, { preserveRestore: true });
+              this.mode = "word";
+              this.fileKind = "doc";
+              this.fileName = payload.sourceFileName || "已复原内容";
+              this.wordOriginalHtml = original.wordOriginalHtml || original.templateRawHtml || `<p>${this.escapeHtml(original.rawCopyText || "已复原。")}</p>`;
+              this.rawCopyText = original.rawCopyText || this.stripHtml(this.wordOriginalHtml);
+              this.exportMode = "doc";
+            }
+
+            if (payload.state) {
+              this.form = payload.state.form || { other: [""] };
+              this.disabledAutomaticTerms = payload.state.disabledAutomaticTerms || [];
+              this.restoredOccurrences = payload.state.restoredOccurrences || [];
+              this.manualSelections = payload.state.manualSelections || [];
+            }
+
+            this.showOriginal = true;
+            this.restorePayload = payload;
+            this.restoreFileName = this.restoreFileName || payload.sourceFileName || "";
+            this.restoreStatus = "已恢复脱敏前内容。点击“恢复脱敏”可重新查看脱敏状态。";
+            this.restoreError = "";
+            this.copyStatus = "已一键恢复原文件内容。";
+          } catch (error) {
+            console.error(error);
+            this.restoreError = "复原失败。复原数据可能已被压缩、另存或第三方工具清除。";
           }
         },
 
@@ -1444,12 +1684,14 @@
             zip.file(name, this.redactDocxXml(xml));
           }
 
+          zip.file("customXml/file-redactor-restore.xml", `<restore><payload>${this.encodeRestorePayload(this.buildRestorePayload("docx"))}</payload></restore>`);
+
           const blob = await zip.generateAsync({
             type: "blob",
             mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
           });
           this.downloadBlob(blob, `${this.outputBaseName()}.docx`);
-          this.copyStatus = "已导出保留原 Word 格式的 DOCX 脱敏文件。";
+          this.copyStatus = "已导出保留原 Word 格式的 DOCX 脱敏文件，并内置一键复原数据。";
         },
 
         redactDocxXml(xml) {
@@ -1468,13 +1710,17 @@
 
         exportDoc() {
           const scope = this.mode === "word" ? "word" : "template";
-          const html = this.buildExportHtml(this.redactHtml(this.wordOriginalHtml || this.templateRawHtml, scope));
+          const payloadComment = `<!--FILE_REDACTOR_RESTORE:${this.encodeRestorePayload(this.buildRestorePayload("doc"))}-->`;
+          const html = `${this.buildExportHtml(this.redactHtml(this.wordOriginalHtml || this.templateRawHtml, scope))}\n${payloadComment}`;
           const blob = new Blob([html], { type: "application/msword;charset=utf-8" });
           this.downloadBlob(blob, `${this.outputBaseName()}.doc`);
+          this.copyStatus = "已导出 DOC 脱敏文件，并内置一键复原数据。";
         },
 
         printDocument() {
           this.showOriginal = false;
+          this.downloadRestorePackage("pdf");
+          this.copyStatus = "PDF/打印已启动，并同步下载 .restore.json 复原包。复原 PDF 时请上传该复原包。";
           this.$nextTick(() => window.print());
         },
 
