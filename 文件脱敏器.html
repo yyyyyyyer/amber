@@ -458,7 +458,7 @@
           <div class="rounded-lg border border-amber-200 bg-amber-50/75 p-4">
             <div class="mb-3">
               <p class="text-sm font-extrabold text-slate-900">复原脱敏文件</p>
-              <p class="mt-1 text-xs leading-5 text-amber-800">上传由本工具导出的可复原 DOCX/DOC，或 PDF 打印时同步生成的 .restore.json 复原包。</p>
+              <p class="mt-1 text-xs leading-5 text-amber-800">上传由本工具导出的 DOCX/DOC/PDF 脱敏文件，或 PDF 打印时同步生成的 .restore.json 复原包。</p>
             </div>
 
             <label
@@ -1029,14 +1029,18 @@
             await this.importFile(file, { preserveRestore: true });
           }
 
-          const payload = await this.extractRestorePayload(file);
+          const embeddedPayload = await this.extractRestorePayload(file);
+          const payload = embeddedPayload || this.findStoredRestorePayloadForFile(file);
           if (!payload) {
-            this.restoreError = "未找到可复原数据。请上传本工具导出的可复原 DOCX/DOC，或对应的 .restore.json 复原包。";
+            this.restoreError = "未找到可复原数据。请上传本工具导出的可复原 DOCX/DOC/PDF，或对应的 .restore.json 复原包。若文件在其他浏览器或设备导出，请同时上传当时下载的复原包。";
             return;
           }
 
           this.restorePayload = payload;
-          this.restoreStatus = `已读取复原数据：${payload.sourceFileName || "原文件"}`;
+          this.rememberRestorePayload(payload, [file.name, this.fileName]);
+          this.restoreStatus = embeddedPayload
+            ? `已读取文件内置复原数据：${payload.sourceFileName || "原文件"}`
+            : `已匹配浏览器本地复原记录：${payload.sourceFileName || "原文件"}`;
         },
 
         async importFile(file, options = {}) {
@@ -1260,6 +1264,65 @@
           };
         },
 
+        rememberRestorePayload(payload, fileNames = []) {
+          if (!this.validateRestorePayload(payload)) return;
+
+          try {
+            const stored = JSON.parse(localStorage.getItem("fileRedactorRestoreStore") || "{}");
+            const aliases = [
+              payload.sourceFileName,
+              this.fileName,
+              ...fileNames
+            ]
+              .flatMap(name => this.restoreNameAliases(name))
+              .filter(Boolean);
+
+            for (const alias of new Set(aliases)) {
+              stored[alias] = payload;
+            }
+
+            localStorage.setItem("fileRedactorRestoreStore", JSON.stringify(stored));
+          } catch (error) {
+            console.warn("restore store unavailable", error);
+          }
+        },
+
+        findStoredRestorePayloadForFile(file) {
+          try {
+            const stored = JSON.parse(localStorage.getItem("fileRedactorRestoreStore") || "{}");
+            for (const alias of this.restoreNameAliases(file && file.name)) {
+              const payload = stored[alias];
+              if (this.validateRestorePayload(payload)) return payload;
+            }
+          } catch (error) {
+            console.warn("restore store unavailable", error);
+          }
+
+          return null;
+        },
+
+        restoreNameAliases(fileName) {
+          const original = String(fileName || "").trim();
+          if (!original) return [];
+
+          const withoutRestore = original.replace(/\.restore\.json$/i, "");
+          const withoutExt = withoutRestore.replace(/\.[^.]+$/i, "");
+          const normalizedBase = withoutExt
+            .replace(/(?:[-_ ]?(?:脱敏|redacted|redaction|masked|已脱敏))+$/i, "")
+            .trim();
+
+          return [
+            original,
+            withoutRestore,
+            withoutExt,
+            normalizedBase,
+            `${normalizedBase}-脱敏`,
+            `${normalizedBase}.redacted`
+          ]
+            .map(name => String(name || "").toLowerCase())
+            .filter(Boolean);
+        },
+
         validateRestorePayload(payload) {
           return payload && payload.app === "file-redactor" && payload.version === 1 && payload.original;
         },
@@ -1318,6 +1381,10 @@
 
         downloadRestorePackage(exportType) {
           const payload = this.buildRestorePayload(exportType);
+          this.rememberRestorePayload(payload, [
+            `${this.outputBaseName()}.pdf`,
+            `${this.outputBaseName()}.restore.json`
+          ]);
           const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
           this.downloadBlob(blob, `${this.outputBaseName()}.restore.json`);
         },
@@ -1684,13 +1751,16 @@
             zip.file(name, this.redactDocxXml(xml, name === "word/document.xml"));
           }
 
-          zip.file("customXml/file-redactor-restore.xml", `<restore><payload>${this.encodeRestorePayload(this.buildRestorePayload("docx"))}</payload></restore>`);
+          const outputName = `${this.outputBaseName()}.docx`;
+          const restorePayload = this.buildRestorePayload("docx");
+          this.rememberRestorePayload(restorePayload, [outputName]);
+          zip.file("customXml/file-redactor-restore.xml", `<restore><payload>${this.encodeRestorePayload(restorePayload)}</payload></restore>`);
 
           const blob = await zip.generateAsync({
             type: "blob",
             mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
           });
-          this.downloadBlob(blob, `${this.outputBaseName()}.docx`);
+          this.downloadBlob(blob, outputName);
           this.copyStatus = "已导出保留原 Word 格式的 DOCX 脱敏文件，并内置一键复原数据。";
         },
 
@@ -1798,10 +1868,13 @@
 
         exportDoc() {
           const scope = this.mode === "word" ? "word" : "template";
-          const payloadComment = `<!--FILE_REDACTOR_RESTORE:${this.encodeRestorePayload(this.buildRestorePayload("doc"))}-->`;
+          const outputName = `${this.outputBaseName()}.doc`;
+          const restorePayload = this.buildRestorePayload("doc");
+          this.rememberRestorePayload(restorePayload, [outputName]);
+          const payloadComment = `<!--FILE_REDACTOR_RESTORE:${this.encodeRestorePayload(restorePayload)}-->`;
           const html = `${this.buildExportHtml(this.redactHtml(this.wordOriginalHtml || this.templateRawHtml, scope))}\n${payloadComment}`;
           const blob = new Blob([html], { type: "application/msword;charset=utf-8" });
-          this.downloadBlob(blob, `${this.outputBaseName()}.doc`);
+          this.downloadBlob(blob, outputName);
           this.copyStatus = "已导出 DOC 脱敏文件，并内置一键复原数据。";
         },
 
