@@ -1,0 +1,1559 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>文件脱敏器</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.8.0/mammoth.browser.min.js"></script>
+  <script src="https://unpkg.com/html-docx-js/dist/html-docx.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <style>
+    [v-cloak] { display: none; }
+
+    html, body {
+      min-height: 100%;
+      background: #e8edf3;
+      color: #152033;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    }
+
+    .control-panel {
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.72), rgba(255,255,255,.28)),
+        #d9dee6;
+      border-right: 1px solid rgba(100, 116, 139, .25);
+    }
+
+    .field-label {
+      display: block;
+      margin-bottom: 8px;
+      color: #334155;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .field-input {
+      width: 100%;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: rgba(255,255,255,.92);
+      padding: 10px 12px;
+      color: #0f172a;
+      font-size: 14px;
+      outline: none;
+      transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
+    }
+
+    .field-input:focus {
+      border-color: #2563eb;
+      background: #ffffff;
+      box-shadow: 0 0 0 4px rgba(37, 99, 235, .12);
+    }
+
+    .field-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 34px;
+      gap: 8px;
+      align-items: start;
+    }
+
+    .icon-button {
+      display: inline-flex;
+      width: 34px;
+      height: 34px;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: rgba(255,255,255,.86);
+      color: #1e40af;
+      font-size: 20px;
+      font-weight: 900;
+      line-height: 1;
+      transition: background .15s ease, border-color .15s ease, color .15s ease;
+    }
+
+    .icon-button:hover {
+      border-color: #2563eb;
+      background: #eff6ff;
+      color: #1d4ed8;
+    }
+
+    .remove-button {
+      color: #64748b;
+      font-size: 18px;
+    }
+
+    .remove-button:hover {
+      border-color: #f43f5e;
+      background: #fff1f2;
+      color: #be123c;
+    }
+
+    .action-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 8px;
+      padding: 11px 12px;
+      font-size: 14px;
+      font-weight: 900;
+      transition: background .15s ease, border-color .15s ease, color .15s ease, transform .15s ease;
+    }
+
+    .action-button:active {
+      transform: translateY(1px);
+    }
+
+    .a4-paper {
+      width: 210mm;
+      min-height: 297mm;
+      max-width: calc(100vw - 34vw);
+      background: #ffffff;
+      border: 1px solid rgba(15, 23, 42, .12);
+      box-shadow: 0 24px 70px rgba(15, 23, 42, .2);
+      padding: 28mm 24mm;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .document-body {
+      font-size: 15px;
+      line-height: 2;
+      color: #1f2937;
+    }
+
+    .document-body h1 {
+      margin-bottom: 28px;
+      text-align: center;
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: 0;
+      color: #0f172a;
+    }
+
+    .document-body p {
+      margin: 0 0 16px;
+      text-align: justify;
+    }
+
+    .document-body .align-right {
+      margin-top: 30px;
+      text-align: right;
+    }
+
+    .redaction-token {
+      display: inline-flex;
+      min-width: 46px;
+      height: 24px;
+      align-items: center;
+      justify-content: center;
+      margin: 0 2px;
+      border: 1px solid rgba(217, 119, 6, .25);
+      border-radius: 4px;
+      background: #fff2bd;
+      color: #7c2d12;
+      font-weight: 800;
+      line-height: 1;
+      vertical-align: baseline;
+      cursor: pointer;
+    }
+
+    .restored-token {
+      cursor: pointer;
+      text-decoration: underline dashed #60a5fa;
+      text-underline-offset: 3px;
+    }
+
+    .selectable-html-text {
+      cursor: text;
+    }
+
+    .docx-preview h1,
+    .docx-preview h2,
+    .docx-preview h3 {
+      margin: 0 0 16px;
+      color: #0f172a;
+      font-weight: 800;
+      line-height: 1.35;
+    }
+
+    .docx-preview p {
+      margin: 0 0 12px;
+      line-height: 1.9;
+    }
+
+    .docx-preview table {
+      width: 100%;
+      margin: 12px 0;
+      border-collapse: collapse;
+    }
+
+    .docx-preview td,
+    .docx-preview th {
+      border: 1px solid #cbd5e1;
+      padding: 8px;
+      vertical-align: top;
+    }
+
+    .pdf-stage {
+      position: relative;
+      margin: 0 auto;
+      background: #ffffff;
+      box-shadow: 0 1px 0 rgba(15, 23, 42, .08);
+    }
+
+    .pdf-stage canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .pdf-page + .pdf-page {
+      margin-top: 18mm;
+    }
+
+    .selectable-text-layer {
+      position: absolute;
+      inset: 0;
+      z-index: 3;
+      user-select: text;
+      cursor: text;
+    }
+
+    .selectable-text-layer span {
+      position: absolute;
+      display: block;
+      color: transparent;
+      white-space: pre;
+      line-height: 1;
+      user-select: text;
+    }
+
+    .selectable-text-layer span::selection {
+      color: transparent;
+      background: rgba(37, 99, 235, .32);
+    }
+
+    .page-number {
+      margin: 0 0 8px;
+      color: #64748b;
+      font-size: 12px;
+      font-weight: 800;
+      text-align: center;
+    }
+
+    .pdf-mask {
+      position: absolute;
+      z-index: 4;
+      min-width: 22px;
+      min-height: 12px;
+      border: 1px solid rgba(14, 165, 233, .25);
+      background: #ffffff;
+      box-shadow: 0 0 0 1px rgba(255,255,255,.75);
+      cursor: pointer;
+    }
+
+    .restored-hit {
+      position: absolute;
+      z-index: 4;
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .upload-drop-active {
+      border-color: #2563eb !important;
+      background: #dbeafe !important;
+      color: #1d4ed8 !important;
+    }
+
+    .selection-action {
+      position: fixed;
+      z-index: 50;
+      border: 0;
+      border-radius: 6px;
+      background: #1d4ed8;
+      padding: 8px 10px;
+      color: #ffffff;
+      font-size: 12px;
+      font-weight: 800;
+      box-shadow: 0 10px 22px rgba(30, 64, 175, .25);
+    }
+
+    .selection-action:hover {
+      background: #1e40af;
+    }
+
+    .image-preview {
+      max-width: 100%;
+      max-height: 235mm;
+      object-fit: contain;
+      border: 1px solid rgba(15, 23, 42, .12);
+      background: #fff;
+    }
+
+    @page {
+      size: A4;
+      margin: 0;
+    }
+
+    @media print {
+      html, body {
+        width: 210mm;
+        min-height: 297mm;
+        margin: 0 !important;
+        background: #ffffff !important;
+      }
+
+      body * {
+        visibility: hidden !important;
+      }
+
+      #paper, #paper * {
+        visibility: visible !important;
+      }
+
+      #paper {
+        position: absolute !important;
+        inset: 0 auto auto 0 !important;
+        width: 210mm !important;
+        max-width: none !important;
+        min-height: 297mm !important;
+        margin: 0 !important;
+        padding: 22mm 20mm !important;
+        border: 0 !important;
+        box-shadow: none !important;
+        overflow: visible !important;
+      }
+
+      #paper.pdf-paper {
+        padding: 0 !important;
+      }
+
+      .pdf-page {
+        break-after: page;
+        page-break-after: always;
+      }
+
+      .pdf-page + .pdf-page {
+        margin-top: 0;
+      }
+
+      .page-number {
+        display: none !important;
+      }
+
+      .no-print {
+        display: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="app" v-cloak class="min-h-screen">
+    <div class="flex min-h-screen">
+      <aside class="control-panel no-print sticky top-0 flex h-screen w-[30%] min-w-[360px] shrink-0 flex-col overflow-y-auto px-7 py-7">
+        <div class="mb-7">
+          <p class="mb-2 text-xs font-bold uppercase tracking-[0.16em] text-slate-500">File Redactor</p>
+          <h1 class="text-2xl font-black text-slate-950">输入脱敏要素</h1>
+          <p class="mt-2 text-sm leading-6 text-slate-600">系统自动识别主体、证件号、日期和地址；左侧仅补充额外需要脱敏的内容。</p>
+        </div>
+
+        <div class="space-y-4">
+          <div>
+            <div class="mb-2 flex items-center justify-between gap-3">
+              <label class="field-label !mb-0" for="other-0">脱敏其他内容</label>
+              <button
+                type="button"
+                class="icon-button"
+                title="增加脱敏其他内容"
+                @click="addField('other')"
+              >+</button>
+            </div>
+
+            <div class="space-y-2">
+              <div v-for="(value, index) in form.other" :key="`other-${index}`" class="field-row">
+                <textarea
+                  :id="`other-${index}`"
+                  class="field-input min-h-[78px] resize-none leading-6"
+                  v-model="form.other[index]"
+                  placeholder="可输入多个词，用换行、逗号或空格分隔"
+                ></textarea>
+                <button
+                  type="button"
+                  class="icon-button remove-button"
+                  :class="{ 'opacity-40 cursor-not-allowed hover:border-slate-300 hover:bg-white/80 hover:text-slate-500': form.other.length === 1 }"
+                  :disabled="form.other.length === 1"
+                  title="删除这一栏"
+                  @click="removeField('other', index)"
+                >×</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="rounded-lg border border-slate-300/80 bg-white/65 p-4">
+            <div class="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <p class="text-sm font-extrabold text-slate-900">自动识别结果</p>
+                <p class="mt-1 text-xs leading-5 text-slate-500">主体名称、统一社会信用代码、身份证号码、出生日期、地址会自动纳入脱敏。</p>
+              </div>
+              <span class="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-700">{{ detectedTerms.length }}</span>
+            </div>
+            <div v-if="detectedTerms.length" class="grid grid-cols-2 gap-2">
+              <button
+                v-for="term in detectedTerms"
+                :key="term"
+                type="button"
+                class="truncate rounded-md border px-3 py-2 text-xs font-extrabold"
+                :class="disabledAutomaticTerms.includes(term) ? 'border-slate-200 bg-slate-100 text-slate-500' : 'border-blue-100 bg-blue-50 text-blue-800'"
+                :title="disabledAutomaticTerms.includes(term) ? `点击重新脱敏：${term}` : `点击取消自动脱敏：${term}`"
+                @click="toggleAutomaticTerm(term)"
+              >{{ term }}</button>
+            </div>
+            <p v-else class="rounded-md bg-slate-50 px-3 py-3 text-xs font-bold leading-5 text-slate-500">
+              暂未识别到敏感要素，导入文件或使用默认模板后会自动扫描。
+            </p>
+          </div>
+
+          <div class="rounded-lg border border-slate-300/80 bg-white/65 p-4">
+            <div class="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <p class="text-sm font-extrabold text-slate-900">一键导入文件</p>
+                <p class="mt-1 text-xs leading-5 text-slate-500">支持 PDF、DOCX、DOC、PNG、JPG。右侧内容可选中或一键复制。</p>
+              </div>
+              <button
+                v-if="fileName"
+                type="button"
+                class="rounded-md border border-slate-300 px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-100"
+                @click="clearFile"
+              >清除</button>
+            </div>
+
+            <label
+              for="fileUpload"
+              class="flex cursor-pointer items-center justify-center rounded-lg border border-dashed border-blue-400 bg-blue-50 px-4 py-3 text-sm font-extrabold text-blue-700 transition hover:bg-blue-100"
+              :class="{ 'upload-drop-active': isDraggingFile }"
+              @dragenter.prevent="isDraggingFile = true"
+              @dragover.prevent="isDraggingFile = true"
+              @dragleave.prevent="isDraggingFile = false"
+              @drop.prevent="handleDrop"
+            >
+              {{ isDraggingFile ? '释放以上传文件' : '选择或拖拽需要脱敏的文件' }}
+            </label>
+            <input
+              id="fileUpload"
+              class="hidden"
+              type="file"
+              accept=".pdf,.doc,.docx,.png,.jpg,.jpeg,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg"
+              @change="handleFile"
+            />
+            <p v-if="fileName" class="mt-3 truncate text-xs font-semibold text-slate-600">已导入：{{ fileName }}</p>
+            <p v-if="fileError" class="mt-3 rounded-md bg-rose-50 px-3 py-2 text-xs font-semibold leading-5 text-rose-700">{{ fileError }}</p>
+          </div>
+        </div>
+
+        <div class="mt-auto pt-7">
+          <div class="mb-4 grid grid-cols-2 gap-3 text-center">
+            <div class="rounded-lg bg-white/70 px-3 py-3">
+              <p class="text-2xl font-black text-slate-950">{{ activeTerms.length }}</p>
+              <p class="text-xs font-bold text-slate-500">脱敏规则</p>
+            </div>
+            <div class="rounded-lg bg-white/70 px-3 py-3">
+              <p class="text-2xl font-black text-blue-700">{{ redactionCount }}</p>
+              <p class="text-xs font-bold text-slate-500">当前命中</p>
+            </div>
+          </div>
+
+          <div class="rounded-lg border border-slate-300/80 bg-white/70 p-4">
+            <label class="field-label" for="exportMode">导出方式</label>
+            <select id="exportMode" class="field-input mb-3" v-model="exportMode">
+              <option v-for="option in exportOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+
+            <div class="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                class="action-button border border-slate-300 bg-white text-slate-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
+                @click="toggleOriginal"
+              >
+                {{ showOriginal ? '恢复脱敏' : '脱敏前' }}
+              </button>
+              <button
+                type="button"
+                class="action-button border border-slate-300 bg-white text-slate-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
+                :disabled="!canCopy"
+                :class="{ 'opacity-50 cursor-not-allowed': !canCopy }"
+                @click="copyContent"
+              >
+                复制识别文字
+              </button>
+              <button
+                type="button"
+                class="action-button col-span-2 bg-slate-950 text-white shadow-lg shadow-slate-900/20 hover:bg-blue-700"
+                @click="exportCurrent"
+              >
+                {{ exportButtonLabel }}
+              </button>
+            </div>
+            <p v-if="copyStatus" class="mt-3 text-xs font-bold text-emerald-700">{{ copyStatus }}</p>
+          </div>
+        </div>
+      </aside>
+
+      <main class="flex w-[70%] flex-1 flex-col bg-[#eef2f7]">
+        <div class="no-print flex items-center justify-between border-b border-slate-200 bg-white/70 px-8 py-4 backdrop-blur">
+          <div>
+            <p class="text-sm font-extrabold text-slate-900">{{ previewTitle }}</p>
+            <p class="mt-1 text-xs text-slate-500">{{ previewSubtitle }}</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="rounded-full bg-emerald-50 px-3 py-1 text-xs font-extrabold text-emerald-700">实时预览</span>
+            <span class="rounded-full bg-amber-50 px-3 py-1 text-xs font-extrabold text-amber-700">A4 打印</span>
+          </div>
+        </div>
+
+        <div class="flex flex-1 justify-center overflow-auto px-8 py-8">
+          <section id="paper" class="a4-paper" :class="{ 'pdf-paper': mode === 'pdf' }" @click="handlePreviewClick" @mouseup="captureSelection">
+            <div v-if="mode === 'template'" class="document-body" v-html="templatePreviewHtml"></div>
+
+            <div v-else-if="mode === 'word'" class="docx-preview document-body" v-html="wordPreviewHtml"></div>
+
+            <div v-else-if="mode === 'pdf'" class="document-body">
+              <div v-if="pdfLoading" class="flex h-[220mm] items-center justify-center text-sm font-bold text-slate-500">
+                正在解析 PDF ...
+              </div>
+              <div v-show="!pdfLoading">
+                <article v-for="page in pdfPages" :key="page.index" class="pdf-page">
+                  <p class="page-number">第 {{ page.index }} / {{ pdfPages.length }} 页</p>
+                  <div class="pdf-stage" :style="page.stageStyle">
+                    <img :src="page.imageUrl" alt="PDF 页面预览" class="block h-full w-full" />
+                    <div class="selectable-text-layer" aria-label="可选中复制的 PDF 文字">
+                      <span v-for="(item, itemIndex) in page.textItems" :key="itemIndex" :style="item.textStyle" :data-text-scope="`pdf:${page.index}`" :data-text-node="itemIndex">{{ item.text }}</span>
+                    </div>
+                    <template v-if="!showOriginal">
+                      <template v-for="mask in pageMasks(page)" :key="mask.key">
+                        <span
+                          v-if="mask.manual ? mask.enabled : !isOccurrenceRestored(mask.key)"
+                          class="pdf-mask"
+                          :style="mask.style"
+                          :title="mask.manual ? `点击取消：${mask.term}` : `点击恢复：${mask.term}`"
+                          @click.stop="toggleMask(mask)"
+                        ></span>
+                        <span
+                          v-else
+                          class="restored-hit"
+                          :style="mask.style"
+                          :title="`点击重新脱敏：${mask.term}`"
+                          @click.stop="toggleMask(mask)"
+                        ></span>
+                      </template>
+                    </template>
+                  </div>
+                </article>
+              </div>
+              <p v-if="!showOriginal && !pdfLoading && pdfPages.length && !pdfMaskCount" class="mt-6 rounded-lg bg-amber-50 px-4 py-3 text-sm font-bold leading-6 text-amber-800">
+                当前 PDF 暂未匹配到脱敏要素。修改左侧字段后会立即重新计算全部页面的遮罩。
+              </p>
+            </div>
+
+            <div v-else-if="mode === 'image'" class="document-body">
+              <div v-if="imageLoading" class="flex h-[220mm] items-center justify-center text-sm font-bold text-slate-500">
+                正在识别图片文字 ...
+              </div>
+              <div v-show="!imageLoading" class="pdf-stage mx-auto" :style="imageStageStyle">
+                <img :src="imageUrl" alt="导入图片预览" class="block h-full w-full object-contain" />
+                <div class="selectable-text-layer" aria-label="可选中复制的图片识别文字">
+                  <span v-for="(item, index) in imageTextItems" :key="index" :style="item.textStyle" data-text-scope="image" :data-text-node="index">{{ item.text }}</span>
+                </div>
+                <template v-if="!showOriginal">
+                  <template v-for="mask in imageMasks" :key="mask.key">
+                    <span v-if="mask.manual ? mask.enabled : !isOccurrenceRestored(mask.key)" class="pdf-mask" :style="mask.style" :title="mask.manual ? `点击取消：${mask.term}` : `点击恢复：${mask.term}`" @click.stop="toggleMask(mask)"></span>
+                    <span v-else class="restored-hit" :style="mask.style" :title="mask.manual ? `点击重新脱敏：${mask.term}` : `点击重新脱敏：${mask.term}`" @click.stop="toggleMask(mask)"></span>
+                  </template>
+                </template>
+              </div>
+              <p v-if="!imageLoading && !imageTextItems.length" class="mt-5 rounded-lg bg-amber-50 px-4 py-3 text-sm font-bold leading-6 text-amber-800">未识别到可复制文字。请使用清晰、正向的图片，或将图片内容粘贴至左侧“脱敏其他内容”。</p>
+            </div>
+          </section>
+        </div>
+      </main>
+      <button
+        v-if="selectionDraft"
+        type="button"
+        class="selection-action no-print"
+        :style="selectionDraft.buttonStyle"
+        @mousedown.prevent
+        @click="applyManualSelection"
+      >脱敏选中内容</button>
+    </div>
+  </div>
+
+  <script>
+    const { createApp } = Vue;
+
+    if (window.pdfjsLib) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    }
+
+    createApp({
+      data() {
+        return {
+          mode: "template",
+          fileName: "",
+          fileKind: "template",
+          fileError: "",
+          copyStatus: "",
+          exportMode: "pdf",
+          isDraggingFile: false,
+          showOriginal: false,
+          imageUrl: "",
+          imageLoading: false,
+          imageSize: { width: 0, height: 0 },
+          imageTextItems: [],
+          wordOriginalHtml: "",
+          originalDocxFile: null,
+          rawCopyText: "",
+          pdfLoading: false,
+          pdfPages: [],
+          disabledAutomaticTerms: [],
+          restoredOccurrences: [],
+          manualSelections: [],
+          selectionDraft: null,
+          form: {
+            other: [""]
+          }
+        };
+      },
+
+      computed: {
+        manualTerms() {
+          const base = [];
+          for (const value of this.form.other || []) {
+            base.push(...String(value || "").split(/[\n,，;；、\s]+/));
+          }
+
+          return [...new Set(
+            base
+              .map(item => String(item || "").trim())
+              .filter(item => item.length > 0)
+          )].sort((a, b) => b.length - a.length);
+        },
+
+        detectedTerms() {
+          return this.detectSensitiveTerms(this.sourceTextForDetection);
+        },
+
+        automaticTerms() {
+          return this.detectedTerms.filter(term => !this.disabledAutomaticTerms.includes(term));
+        },
+
+        activeTerms() {
+          const base = [...this.automaticTerms, ...this.manualTerms];
+          return [...new Set(
+            base
+              .map(item => String(item || "").trim())
+              .filter(item => item.length > 0)
+          )].sort((a, b) => b.length - a.length);
+        },
+
+        previewTitle() {
+          if (this.mode === "template") return "律师函模板演示";
+          if (this.mode === "word") return "Word 文档脱敏预览";
+          if (this.mode === "pdf") return "PDF 白色遮罩预览";
+          return "图片文件预览";
+        },
+
+        previewSubtitle() {
+          if (!this.fileName) return "未导入文件时，右侧展示标准催款律师函模板。";
+          return `正在预览：${this.fileName}`;
+        },
+
+        exportOptions() {
+          if (this.fileKind === "pdf") {
+            return [{ value: "pdf", label: "导出 PDF（与上传格式一致）" }];
+          }
+
+          if (this.fileKind === "docx") {
+            return [
+              { value: "docx", label: "导出 DOCX（与上传格式一致）" },
+              { value: "pdf", label: "导出 PDF / 打印" }
+            ];
+          }
+
+          if (this.fileKind === "doc") {
+            return [
+              { value: "doc", label: "导出 DOC（与上传格式一致）" },
+              { value: "pdf", label: "导出 PDF / 打印" }
+            ];
+          }
+
+          return [{ value: "pdf", label: "导出 PDF / 打印" }];
+        },
+
+        exportButtonLabel() {
+          const labelMap = {
+            pdf: "导出 PDF",
+            docx: "导出 DOCX",
+            doc: "导出 DOC"
+          };
+          return labelMap[this.exportMode] || "导出";
+        },
+
+        canCopy() {
+          return Boolean(this.rawCopyText || this.mode === "template");
+        },
+
+        sourceTextForDetection() {
+          if (this.rawCopyText) return this.rawCopyText;
+          if (this.fileName) return "";
+          if (this.mode === "word") return this.stripHtml(this.wordOriginalHtml);
+          return this.stripHtml(this.templateRawHtml);
+        },
+
+        redactedCopyText() {
+          const source = this.rawCopyText || this.stripHtml(this.templateRawHtml);
+          return this.redactPlainText(source);
+        },
+
+        templateRawHtml() {
+          const other = this.escapeHtml(this.joinedValues("other") || "无");
+
+          return `
+            <h1>催款律师函</h1>
+            <p><strong>致：</strong>张三、李四、广州衔尾蛇有限公司</p>
+            <p>受委托人委托，本律师事务所就您拖欠款项一事，依法向您发出本律师函。经核验，张三身份证号码为 44063821183912344，李四出生日期为 2026年1月1日，广州衔尾蛇有限公司统一社会信用代码为 91440101MA9XXXXXXX。</p>
+            <p>根据委托人提供的合同、对账单及相关凭证，截至本函出具之日，您仍欠付委托人款项人民币 30 元。登记地址及联系地址为 广东省广州市天河区珠江东路16号高德置地冬广场。</p>
+            <p>请您于收到本函后三日内一次性清偿全部欠款，并与委托人完成书面确认。若您逾期仍未履行付款义务，委托人将保留通过诉讼、仲裁、财产保全、申请强制执行等方式追究您法律责任的权利。</p>
+            <p><strong>其他需脱敏内容：</strong>${other}</p>
+            <p>本函为正式法律文件，请您审慎对待。系统会自动识别主体名称、统一社会信用代码、身份证号码、出生日期和地址，并按照文档类型完成脱敏。</p>
+            <p class="align-right">某某律师事务所<br />2026年8月3日</p>
+          `;
+        },
+
+        templatePreviewHtml() {
+          return this.showOriginal ? this.templateRawHtml : this.redactHtml(this.templateRawHtml, "template");
+        },
+
+        wordPreviewHtml() {
+          return this.showOriginal ? this.wordOriginalHtml : this.redactHtml(this.wordOriginalHtml, "word");
+        },
+
+        imageStageStyle() {
+          return {
+            width: `${this.imageSize.width || 595}px`,
+            height: `${this.imageSize.height || 842}px`
+          };
+        },
+
+        pdfMaskCount() {
+          return this.pdfPages.reduce((total, page) => total + this.pageMasks(page).filter(mask => mask.manual ? mask.enabled : !this.isOccurrenceRestored(mask.key)).length, 0);
+        },
+
+        imageMasks() {
+          return this.makeMasks(this.imageTextItems, "image");
+        },
+
+        redactionCount() {
+          if (this.mode === "pdf") return this.pdfMaskCount;
+          if (this.mode === "image") return this.imageMasks.filter(mask => mask.manual ? mask.enabled : !this.isOccurrenceRestored(mask.key)).length;
+
+          const preview = this.mode === "word" ? this.wordPreviewHtml : this.templatePreviewHtml;
+          const container = document.createElement("div");
+          container.innerHTML = preview;
+          return container.querySelectorAll(".redaction-token").length;
+        }
+      },
+
+      methods: {
+        addField(key) {
+          if (!Array.isArray(this.form[key])) return;
+          this.form[key].push("");
+          this.copyStatus = "";
+        },
+
+        removeField(key, index) {
+          if (!Array.isArray(this.form[key]) || this.form[key].length <= 1) return;
+          this.form[key].splice(index, 1);
+          this.copyStatus = "";
+        },
+
+        toggleOriginal() {
+          this.showOriginal = !this.showOriginal;
+          this.selectionDraft = null;
+        },
+
+        toggleAutomaticTerm(term) {
+          if (!this.detectedTerms.includes(term)) return;
+          if (this.disabledAutomaticTerms.includes(term)) {
+            this.disabledAutomaticTerms = this.disabledAutomaticTerms.filter(item => item !== term);
+            this.clearRestoredOccurrences(term);
+            this.copyStatus = `“${term}”已重新启用自动脱敏。`;
+            return;
+          }
+
+          this.disabledAutomaticTerms.push(term);
+          this.copyStatus = `“${term}”已取消全文自动脱敏。`;
+        },
+
+        clearRestoredOccurrences(term) {
+          const encodedTerm = encodeURIComponent(term);
+          this.restoredOccurrences = this.restoredOccurrences.filter(key => !key.includes(`:${encodedTerm}:`) && !key.endsWith(`:${term}`));
+        },
+
+        handlePreviewClick(event) {
+          const target = event.target instanceof Element ? event.target.closest(".redaction-token, .restored-token") : null;
+          if (target && target.dataset.redactionKey && target.dataset.redactionTerm) {
+            if (target.dataset.redactionType === "manual") {
+              this.toggleManualSelection(target.dataset.redactionKey, target.dataset.redactionTerm);
+            } else {
+              this.toggleOccurrence(target.dataset.redactionKey, target.dataset.redactionTerm);
+            }
+          }
+        },
+
+        captureSelection() {
+          if (this.showOriginal) return;
+          const selection = window.getSelection();
+          if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) return;
+
+          const range = selection.getRangeAt(0);
+          const startElement = this.findSelectableTextElement(range.startContainer);
+          const endElement = this.findSelectableTextElement(range.endContainer);
+          if (!startElement || !endElement || startElement.dataset.textScope !== endElement.dataset.textScope) return;
+
+          const textElements = Array.from(document.querySelectorAll("#paper [data-text-scope][data-text-node]"));
+          const startIndex = textElements.indexOf(startElement);
+          const endIndex = textElements.indexOf(endElement);
+          if (startIndex < 0 || endIndex < startIndex) return;
+
+          const scope = startElement.dataset.textScope;
+          const segments = [];
+          for (let index = startIndex; index <= endIndex; index++) {
+            const element = textElements[index];
+            if (element.dataset.textScope !== scope) return;
+            const elementText = element.textContent || "";
+            const localStart = index === startIndex ? this.getTextBoundaryOffset(startElement, range.startContainer, range.startOffset) : 0;
+            const localEnd = index === endIndex ? this.getTextBoundaryOffset(endElement, range.endContainer, range.endOffset) : elementText.length;
+            if (localEnd <= localStart) continue;
+            const sourceStart = Number(element.dataset.textStart || 0) + localStart;
+            const term = elementText.slice(localStart, localEnd);
+            segments.push({
+              key: `manual:${scope}:${element.dataset.textNode}:${sourceStart}:${term.length}`,
+              scope,
+              nodeIndex: Number(element.dataset.textNode),
+              start: sourceStart,
+              length: term.length,
+              term
+            });
+          }
+
+          this.trimManualSegments(segments);
+          if (!segments.length || !segments.some(segment => segment.term.trim())) return;
+
+          const rect = range.getBoundingClientRect();
+          this.selectionDraft = {
+            segments,
+            buttonStyle: {
+              left: `${Math.min(Math.max(12, rect.right + 8), window.innerWidth - 118)}px`,
+              top: `${Math.min(Math.max(12, rect.bottom + 8), window.innerHeight - 42)}px`
+            }
+          };
+        },
+
+        applyManualSelection() {
+          if (!this.selectionDraft) return;
+          for (const segment of this.selectionDraft.segments) {
+            const existing = this.manualSelections.find(item => item.key === segment.key);
+            if (existing) {
+              existing.enabled = true;
+            } else {
+              this.manualSelections.push({ ...segment, enabled: true });
+            }
+          }
+          this.copyStatus = "已按选中位置手动脱敏。";
+          this.selectionDraft = null;
+          window.getSelection().removeAllRanges();
+        },
+
+        findSelectableTextElement(node) {
+          const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+          return element && element.closest("[data-text-scope][data-text-node]");
+        },
+
+        getTextBoundaryOffset(element, container, offset) {
+          const probe = document.createRange();
+          probe.setStart(element, 0);
+          probe.setEnd(container, offset);
+          return probe.toString().length;
+        },
+
+        trimManualSegments(segments) {
+          while (segments.length && !segments[0].term.trim()) segments.shift();
+          while (segments.length && !segments[segments.length - 1].term.trim()) segments.pop();
+          if (!segments.length) return;
+
+          const first = segments[0];
+          const leading = first.term.length - first.term.trimStart().length;
+          if (leading) {
+            first.start += leading;
+            first.length -= leading;
+            first.term = first.term.trimStart();
+            first.key = `manual:${first.scope}:${first.nodeIndex}:${first.start}:${first.length}`;
+          }
+
+          const last = segments[segments.length - 1];
+          const trailing = last.term.length - last.term.trimEnd().length;
+          if (trailing) {
+            last.length -= trailing;
+            last.term = last.term.trimEnd();
+            last.key = `manual:${last.scope}:${last.nodeIndex}:${last.start}:${last.length}`;
+          }
+        },
+
+        isOccurrenceRestored(key) {
+          return this.restoredOccurrences.includes(key);
+        },
+
+        toggleOccurrence(key, term) {
+          if (this.isOccurrenceRestored(key)) {
+            this.restoredOccurrences = this.restoredOccurrences.filter(item => item !== key);
+            this.copyStatus = `“${term}”这一处已重新脱敏。`;
+            return;
+          }
+
+          this.restoredOccurrences.push(key);
+          this.copyStatus = `“${term}”这一处已恢复原文。`;
+        },
+
+        toggleManualSelection(key, term) {
+          const selection = this.manualSelections.find(item => item.key === key);
+          if (!selection) return;
+          selection.enabled = !selection.enabled;
+          this.copyStatus = selection.enabled ? `“${term}”这一处已重新手动脱敏。` : `“${term}”这一处已取消手动脱敏。`;
+        },
+
+        toggleMask(mask) {
+          if (mask.manual) {
+            this.toggleManualSelection(mask.key, mask.term);
+          } else {
+            this.toggleOccurrence(mask.key, mask.term);
+          }
+        },
+
+        async handleFile(event) {
+          const file = event.target.files && event.target.files[0];
+          if (file) await this.importFile(file);
+          event.target.value = "";
+        },
+
+        async handleDrop(event) {
+          this.isDraggingFile = false;
+          const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+          if (file) await this.importFile(file);
+        },
+
+        async importFile(file) {
+          if (!file) return;
+
+          this.clearFile(false);
+          this.fileName = file.name;
+          this.copyStatus = "";
+          const lowerName = file.name.toLowerCase();
+
+          try {
+            if (file.type === "application/pdf" || lowerName.endsWith(".pdf")) {
+              this.fileKind = "pdf";
+              this.exportMode = "pdf";
+              await this.loadPdf(file);
+              return;
+            }
+
+            if (file.type.startsWith("image/") || /\.(png|jpg|jpeg)$/.test(lowerName)) {
+              this.mode = "image";
+              this.fileKind = "image";
+              this.exportMode = "pdf";
+              this.imageUrl = URL.createObjectURL(file);
+              await this.loadImageText(file);
+              return;
+            }
+
+            if (lowerName.endsWith(".docx")) {
+              this.fileKind = "docx";
+              this.exportMode = "docx";
+              await this.loadDocx(file);
+              return;
+            }
+
+            if (lowerName.endsWith(".doc")) {
+              this.fileKind = "doc";
+              this.exportMode = "doc";
+              await this.loadDoc(file);
+              return;
+            }
+
+            this.fileError = "暂不支持该文件类型，请选择 PDF、DOCX、DOC、PNG 或 JPG。";
+          } catch (error) {
+            console.error(error);
+            this.mode = "template";
+            this.fileKind = "template";
+            this.exportMode = "pdf";
+            this.pdfLoading = false;
+            this.fileError = "文件解析失败，请确认文件未加密或损坏。";
+          }
+        },
+
+        async loadDocx(file) {
+          this.mode = "word";
+          this.originalDocxFile = file;
+          const arrayBuffer = await file.arrayBuffer();
+          const result = await mammoth.convertToHtml({ arrayBuffer });
+          this.wordOriginalHtml = result.value || "<p>该 Word 文档没有可预览的文本内容。</p>";
+          this.rawCopyText = this.stripHtml(this.wordOriginalHtml);
+          this.fileError = "DOCX 已导入。右侧为浏览器预览；导出 DOCX 时会保留原文件的字体、表格、底纹、水印和版式。";
+        },
+
+        async loadDoc(file) {
+          this.mode = "word";
+          const arrayBuffer = await file.arrayBuffer();
+          const decoded = new TextDecoder("utf-8", { fatal: false }).decode(arrayBuffer);
+          const readableText = this.extractReadableDocText(decoded);
+
+          this.rawCopyText = readableText || "旧版 .doc 文件已导入，但浏览器无法稳定解析二进制 Word 正文。";
+          this.wordOriginalHtml = `
+            <h1>旧版 DOC 文件预览</h1>
+            <p>文件名：${this.escapeHtml(file.name)}</p>
+            <p>已支持复制和导出 DOC；若原文件为旧版二进制 Word，浏览器只能尽力提取可读文本，复杂排版建议另存为 DOCX 后导入。</p>
+            <p>${this.escapeHtml(this.rawCopyText).replace(/\n/g, "<br />")}</p>
+          `;
+          this.fileError = "DOC 已导入。旧版二进制 .doc 的正文解析为浏览器兼容模式，可能不完整。";
+        },
+
+        async loadPdf(file) {
+          this.mode = "pdf";
+          this.pdfLoading = true;
+          this.pdfPages = [];
+
+          const arrayBuffer = await file.arrayBuffer();
+          const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+          const allText = [];
+          for (let pageIndex = 1; pageIndex <= pdf.numPages; pageIndex++) {
+            const page = await pdf.getPage(pageIndex);
+            const viewport = page.getViewport({ scale: 1.08 });
+            const canvas = document.createElement("canvas");
+            const context = canvas.getContext("2d");
+            canvas.width = Math.floor(viewport.width);
+            canvas.height = Math.floor(viewport.height);
+            await page.render({ canvasContext: context, viewport }).promise;
+
+            const textContent = await page.getTextContent();
+            const textItems = this.createPdfTextItems(textContent.items, viewport);
+            allText.push(textItems.map(item => item.text).join(" "));
+            this.pdfPages.push({
+              index: pageIndex,
+              imageUrl: canvas.toDataURL("image/png"),
+              textItems,
+              stageStyle: {
+                width: `${canvas.width}px`,
+                height: `${canvas.height}px`
+              }
+            });
+          }
+          this.rawCopyText = allText.join("\n\n");
+
+          this.pdfLoading = false;
+        },
+
+        async loadImageText(file) {
+          this.imageLoading = true;
+          this.imageTextItems = [];
+          this.rawCopyText = "";
+
+          try {
+            const dimensions = await this.getImageDimensions(this.imageUrl);
+            const maxWidth = 620;
+            const scale = Math.min(1, maxWidth / dimensions.width);
+            this.imageSize = {
+              width: Math.max(1, Math.round(dimensions.width * scale)),
+              height: Math.max(1, Math.round(dimensions.height * scale))
+            };
+
+            if (!window.Tesseract) throw new Error("OCR library unavailable");
+            const result = await Tesseract.recognize(file, "chi_sim+eng", { logger: () => {} });
+            const words = (result.data && result.data.words) || [];
+            this.rawCopyText = (result.data && result.data.text) || "";
+            this.imageTextItems = words
+              .filter(word => word.text && word.text.trim())
+              .map(word => this.createImageTextItem(word, scale));
+          } catch (error) {
+            console.error(error);
+            this.fileError = "图片已导入，但文字识别未完成。请检查网络后重新导入，或使用 PDF/DOCX 文件。";
+          } finally {
+            this.imageLoading = false;
+          }
+        },
+
+        clearFile(resetInput = true) {
+          if (this.imageUrl) URL.revokeObjectURL(this.imageUrl);
+          this.mode = "template";
+          this.fileName = "";
+          this.fileKind = "template";
+          this.fileError = "";
+          this.copyStatus = "";
+          this.exportMode = "pdf";
+          this.showOriginal = false;
+          this.imageUrl = "";
+          this.imageLoading = false;
+          this.imageSize = { width: 0, height: 0 };
+          this.imageTextItems = [];
+          this.wordOriginalHtml = "";
+          this.originalDocxFile = null;
+          this.rawCopyText = "";
+          this.pdfLoading = false;
+          this.pdfPages = [];
+          this.disabledAutomaticTerms = [];
+          this.restoredOccurrences = [];
+          this.manualSelections = [];
+          this.selectionDraft = null;
+          this.isDraggingFile = false;
+
+          if (resetInput) {
+            const input = document.getElementById("fileUpload");
+            if (input) input.value = "";
+          }
+        },
+
+        detectSensitiveTerms(sourceText) {
+          const text = String(sourceText || "");
+          const terms = [];
+
+          this.collectMatches(terms, text, /[0-9A-Z]{18}/g);
+          this.collectMatches(terms, text, /\b\d{15}\b|\b\d{16,18}[\dXx]?\b/g);
+          const birthDatePattern = /(?:出生日期|出生于|出生)[：:\s]*(\d{4}年\d{1,2}月\d{1,2}日|\d{4}[-/.]\d{1,2}[-/.]\d{1,2})/g;
+          let birthDateMatch;
+          while ((birthDateMatch = birthDatePattern.exec(text)) !== null) {
+            terms.push(birthDateMatch[1]);
+          }
+          this.collectMatches(terms, text, /[\u4e00-\u9fa5A-Za-z0-9（）()]{2,40}(?:有限责任公司|股份有限公司|集团有限公司|有限公司|分公司|公司)/g);
+          this.collectMatches(terms, text, /(?:[\u4e00-\u9fa5]{2,}(?:省|自治区|市|区|县))[\u4e00-\u9fa5A-Za-z0-9号栋座楼层室区县镇街道路巷弄村广场大厦中心园-]{6,80}/g);
+          this.collectMatches(terms, text, /(?:张三|李四)/g);
+
+          const labelPattern = /(?:致|姓名|主体名称|当事人|被告|原告|债务人|借款人|法定代表人|联系人)[：:\s]*([\u4e00-\u9fa5、]{2,24})/g;
+          let labelMatch;
+          while ((labelMatch = labelPattern.exec(text)) !== null) {
+            labelMatch[1]
+              .split("、")
+              .map(item => item.trim())
+              .filter(item => /^[\u4e00-\u9fa5]{2,4}$/.test(item))
+              .forEach(item => terms.push(item));
+          }
+
+          return [...new Set(
+            terms
+              .map(this.normalizeDetectedTerm)
+              .filter(item => item.length >= 2)
+          )].sort((a, b) => b.length - a.length);
+        },
+
+        collectMatches(target, text, pattern) {
+          let match;
+          while ((match = pattern.exec(text)) !== null) {
+            target.push(match[0]);
+          }
+        },
+
+        normalizeDetectedTerm(term) {
+          return String(term || "")
+            .replace(/[，,。；;：:\s]+$/g, "")
+            .replace(/^(地址|联系地址|登记地址|住所地|身份证号码|统一社会信用代码)[：:\s]*/g, "")
+            .trim();
+        },
+
+        createPdfTextItems(items, viewport) {
+          return items
+            .filter(item => item.str && item.str.trim())
+            .map(item => {
+              const transform = pdfjsLib.Util.transform(viewport.transform, item.transform);
+              const fontHeight = Math.max(Math.hypot(transform[2], transform[3]), 10);
+              const width = Math.max((item.width || item.str.length * fontHeight * .52) * viewport.scale, 16);
+              const left = Math.max(transform[4], 0);
+              const top = Math.max(transform[5] - fontHeight, 0);
+
+              return {
+                text: item.str,
+                left,
+                top,
+                width,
+                height: fontHeight,
+                textStyle: {
+                  left: `${left}px`,
+                  top: `${top}px`,
+                  width: `${width}px`,
+                  height: `${fontHeight}px`,
+                  fontSize: `${fontHeight}px`
+                }
+              };
+            });
+        },
+
+        createImageTextItem(word, scale) {
+          const box = word.bbox || {};
+          const left = Math.max(0, Math.round((box.x0 || 0) * scale));
+          const top = Math.max(0, Math.round((box.y0 || 0) * scale));
+          const width = Math.max(12, Math.round(((box.x1 || 0) - (box.x0 || 0)) * scale));
+          const height = Math.max(10, Math.round(((box.y1 || 0) - (box.y0 || 0)) * scale));
+
+          return {
+            text: word.text,
+            left,
+            top,
+            width,
+            height,
+            textStyle: {
+              left: `${left}px`,
+              top: `${top}px`,
+              width: `${width}px`,
+              height: `${height}px`,
+              fontSize: `${height}px`
+            }
+          };
+        },
+
+        getImageDimensions(url) {
+          return new Promise((resolve, reject) => {
+            const image = new Image();
+            image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+            image.onerror = reject;
+            image.src = url;
+          });
+        },
+
+        pageMasks(page) {
+          return this.makeMasks(page.textItems || [], `pdf:${page.index}`);
+        },
+
+        makeMasks(items, scope) {
+          const hasManualSelection = this.manualSelections.some(selection => selection.scope === scope);
+          if (!this.activeTerms.length && !hasManualSelection) return [];
+
+          const directPattern = this.activeTerms.length ? new RegExp(this.activeTerms.map(this.escapeRegExp).join("|"), "g") : null;
+          return items.flatMap((item, itemIndex) => {
+            const masks = [];
+            let match;
+
+            // Manual rules only enter through this exact-text branch.
+            if (directPattern) {
+              directPattern.lastIndex = 0;
+              while ((match = directPattern.exec(item.text)) !== null) {
+                masks.push(this.createPositionedMask(item, match[0], match.index, match[0].length, `${scope}:${itemIndex}:${match.index}:${match[0]}`));
+              }
+            }
+
+            // Auto-detected addresses and IDs may be split into several PDF/OCR text items.
+            if (!masks.length) {
+              const fragmentTerm = this.automaticTerms.find(term => item.text.length > 1 && term.includes(item.text));
+              if (fragmentTerm) {
+                masks.push(this.createPositionedMask(item, fragmentTerm, 0, item.text.length, `${scope}:${itemIndex}:fragment:${fragmentTerm}`));
+              }
+            }
+
+            for (const selection of this.manualSelections) {
+              if (selection.scope !== scope || selection.nodeIndex !== itemIndex) continue;
+              const manualMask = this.createPositionedMask(item, selection.term, selection.start, selection.length, selection.key);
+              manualMask.manual = true;
+              manualMask.enabled = selection.enabled;
+              masks.push(manualMask);
+            }
+
+            return masks;
+          });
+        },
+
+        createPositionedMask(item, term, start, length, key) {
+          const charWidth = item.width / Math.max(item.text.length, 1);
+          return {
+            key,
+            term,
+            style: {
+              left: `${Math.max(item.left + charWidth * start - 2, 0)}px`,
+              top: `${Math.max(item.top - 1, 0)}px`,
+              width: `${Math.max(charWidth * length + 4, 26)}px`,
+              height: `${Math.max(item.height + 4, 16)}px`
+            }
+          };
+        },
+
+        redactHtml(sourceHtml, scope) {
+          if (!sourceHtml) return "";
+
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(`<div>${sourceHtml}</div>`, "text/html");
+          const root = doc.body.firstElementChild;
+          const regex = this.activeTerms.length ? new RegExp(this.activeTerms.map(this.escapeRegExp).join("|"), "g") : null;
+          const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+          const nodes = [];
+          const occurrenceCounts = {};
+
+          while (walker.nextNode()) nodes.push(walker.currentNode);
+
+          for (const [nodeIndex, node] of nodes.entries()) {
+            const text = node.nodeValue;
+            const fragment = doc.createDocumentFragment();
+            const ranges = [];
+            let match;
+
+            if (regex) {
+              regex.lastIndex = 0;
+              while ((match = regex.exec(text)) !== null) {
+                ranges.push({
+                  start: match.index,
+                  end: match.index + match[0].length,
+                  term: match[0],
+                  key: this.nextOccurrenceKey(scope, match[0], occurrenceCounts),
+                  manual: false
+                });
+              }
+            }
+
+            for (const selection of this.manualSelections) {
+              if (selection.scope !== scope || selection.nodeIndex !== nodeIndex) continue;
+              ranges.push({
+                start: selection.start,
+                end: selection.start + selection.length,
+                term: selection.term,
+                key: selection.key,
+                manual: true,
+                enabled: selection.enabled
+              });
+            }
+
+            ranges.sort((left, right) => left.start - right.start || Number(right.manual) - Number(left.manual));
+            let lastIndex = 0;
+
+            for (const range of ranges) {
+              if (range.start < lastIndex) continue;
+              if (range.start > lastIndex) this.appendSelectableHtmlText(doc, fragment, text.slice(lastIndex, range.start), scope, nodeIndex, lastIndex);
+
+              const restored = range.manual ? !range.enabled : this.isOccurrenceRestored(range.key);
+              const token = doc.createElement(restored ? "span" : "mark");
+              token.className = restored ? "restored-token" : "redaction-token";
+              token.textContent = restored ? range.term : "【】";
+              token.dataset.redactionKey = range.key;
+              token.dataset.redactionTerm = range.term;
+              token.dataset.redactionType = range.manual ? "manual" : "automatic";
+              token.title = restored ? `点击重新脱敏：${range.term}` : range.manual ? `点击取消：${range.term}` : `点击恢复：${range.term}`;
+              fragment.appendChild(token);
+              lastIndex = range.end;
+            }
+
+            if (lastIndex < text.length) this.appendSelectableHtmlText(doc, fragment, text.slice(lastIndex), scope, nodeIndex, lastIndex);
+
+            node.parentNode.replaceChild(fragment, node);
+          }
+
+          return root.innerHTML;
+        },
+
+        appendSelectableHtmlText(doc, fragment, text, scope, nodeIndex, sourceStart) {
+          if (!text) return;
+          const span = doc.createElement("span");
+          span.className = "selectable-html-text";
+          span.dataset.textScope = scope;
+          span.dataset.textNode = nodeIndex;
+          span.dataset.textStart = sourceStart;
+          span.textContent = text;
+          fragment.appendChild(span);
+        },
+
+        nextOccurrenceKey(scope, term, counts) {
+          const count = counts[term] || 0;
+          counts[term] = count + 1;
+          return `${scope}:${encodeURIComponent(term)}:${count}`;
+        },
+
+        redactPlainText(sourceText) {
+          let output = String(sourceText || "");
+          for (const term of this.activeTerms) {
+            output = output.replace(new RegExp(this.escapeRegExp(term), "g"), "【】");
+          }
+          return output;
+        },
+
+        async copyContent() {
+          if (!this.canCopy) return;
+          const text = (this.rawCopyText || this.stripHtml(this.templateRawHtml)).trim();
+          if (!text) {
+            this.copyStatus = "暂无可复制内容。";
+            return;
+          }
+
+          try {
+            await navigator.clipboard.writeText(text);
+            this.copyStatus = "已复制右侧识别到的原文内容，可直接粘贴到左侧。";
+          } catch (error) {
+            const textarea = document.createElement("textarea");
+            textarea.value = text;
+            textarea.setAttribute("readonly", "");
+            textarea.style.position = "fixed";
+            textarea.style.left = "-9999px";
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand("copy");
+            document.body.removeChild(textarea);
+            this.copyStatus = "已复制右侧识别到的原文内容，可直接粘贴到左侧。";
+          }
+        },
+
+        async exportCurrent() {
+          this.showOriginal = false;
+
+          if (this.exportMode === "docx") {
+            await this.exportDocx();
+            return;
+          }
+
+          if (this.exportMode === "doc") {
+            this.exportDoc();
+            return;
+          }
+
+          this.printDocument();
+        },
+
+        async exportDocx() {
+          if (!this.originalDocxFile) {
+            this.fileError = "当前没有可保真导出的 DOCX 原文件。请重新导入 DOCX 后导出。";
+            return;
+          }
+
+          if (!window.JSZip) {
+            this.fileError = "DOCX 保真导出组件未加载，请检查网络后重新打开页面。";
+            return;
+          }
+
+          const zip = await JSZip.loadAsync(await this.originalDocxFile.arrayBuffer());
+          const storyFiles = Object.keys(zip.files).filter(name => /^word\/(?:document|header\d+|footer\d+|footnotes|endnotes|comments)\.xml$/.test(name));
+
+          for (const name of storyFiles) {
+            const entry = zip.file(name);
+            if (!entry) continue;
+            const xml = await entry.async("string");
+            zip.file(name, this.redactDocxXml(xml));
+          }
+
+          const blob = await zip.generateAsync({
+            type: "blob",
+            mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          });
+          this.downloadBlob(blob, `${this.outputBaseName()}.docx`);
+          this.copyStatus = "已导出保留原 Word 格式的 DOCX 脱敏文件。";
+        },
+
+        redactDocxXml(xml) {
+          if (!this.activeTerms.length) return xml;
+          const pattern = new RegExp(this.activeTerms.map(this.escapeRegExp).join("|"), "g");
+          const occurrenceCounts = {};
+          return xml.replace(/(<w:t(?:\s[^>]*)?>)([\s\S]*?)(<\/w:t>)/g, (match, opening, text, closing) => {
+            pattern.lastIndex = 0;
+            const redactedText = text.replace(pattern, term => {
+              const key = this.nextOccurrenceKey("word", term, occurrenceCounts);
+              return this.isOccurrenceRestored(key) ? term : "【】";
+            });
+            return `${opening}${redactedText}${closing}`;
+          });
+        },
+
+        exportDoc() {
+          const scope = this.mode === "word" ? "word" : "template";
+          const html = this.buildExportHtml(this.redactHtml(this.wordOriginalHtml || this.templateRawHtml, scope));
+          const blob = new Blob([html], { type: "application/msword;charset=utf-8" });
+          this.downloadBlob(blob, `${this.outputBaseName()}.doc`);
+        },
+
+        printDocument() {
+          this.showOriginal = false;
+          this.$nextTick(() => window.print());
+        },
+
+        buildExportHtml(bodyHtml) {
+          return `
+            <!doctype html>
+            <html>
+            <head>
+              <meta charset="utf-8">
+              <style>
+                body { font-family: "Microsoft YaHei", sans-serif; line-height: 1.9; color: #111827; }
+                h1 { text-align: center; font-size: 24px; }
+                table { width: 100%; border-collapse: collapse; }
+                td, th { border: 1px solid #cbd5e1; padding: 8px; }
+                .redaction-token { background: #fff2bd; color: #7c2d12; font-weight: 800; }
+              </style>
+            </head>
+            <body>${bodyHtml}</body>
+            </html>
+          `;
+        },
+
+        downloadBlob(blob, fileName) {
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = fileName;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+        },
+
+        outputBaseName() {
+          const base = this.fileName ? this.fileName.replace(/\.[^.]+$/, "") : "脱敏文件";
+          return `${base}-脱敏`;
+        },
+
+        joinedValues(key) {
+          return (this.form[key] || [])
+            .map(value => String(value || "").trim())
+            .filter(Boolean)
+            .join("、");
+        },
+
+        extractReadableDocText(decodedText) {
+          const matches = decodedText
+            .replace(/\u0000/g, "")
+            .match(/[\u4e00-\u9fa5A-Za-z0-9，。；：、“”‘’（）《》【】\-\s]{4,}/g);
+
+          if (!matches) return "";
+
+          return matches
+            .map(item => item.replace(/\s+/g, " ").trim())
+            .filter(item => item.length > 3)
+            .slice(0, 120)
+            .join("\n");
+        },
+
+        escapeRegExp(value) {
+          return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        },
+
+        escapeHtml(value) {
+          return String(value)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+        },
+
+        stripHtml(html) {
+          const container = document.createElement("div");
+          container.innerHTML = html || "";
+          return container.textContent || container.innerText || "";
+        }
+      }
+    }).mount("#app");
+  </script>
+</body>
+</html>
