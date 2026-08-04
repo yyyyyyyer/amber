@@ -169,6 +169,31 @@
       text-underline-offset: 3px;
     }
 
+    .restore-unmatched-paragraph {
+      background: #fef3c7 !important;
+      box-shadow: inset 3px 0 0 #f59e0b;
+    }
+
+    .restore-unmatched-page {
+      position: absolute;
+      z-index: 2;
+      inset: 0;
+      pointer-events: none;
+      background: rgba(250, 204, 21, .22);
+      box-shadow: inset 0 0 0 2px rgba(217, 119, 6, .62);
+    }
+
+    .restore-pdf-text {
+      position: absolute;
+      z-index: 5;
+      overflow: hidden;
+      color: #111827;
+      white-space: nowrap;
+      pointer-events: none;
+      line-height: 1;
+      text-align: left;
+    }
+
     .selectable-html-text {
       cursor: text;
     }
@@ -458,7 +483,7 @@
           <div class="rounded-lg border border-amber-200 bg-amber-50/75 p-4">
             <div class="mb-3">
               <p class="text-sm font-extrabold text-slate-900">复原脱敏文件</p>
-              <p class="mt-1 text-xs leading-5 text-amber-800">上传由本工具导出的 DOCX/DOC/PDF 脱敏文件，或 PDF 打印时同步生成的 .restore.json 复原包。</p>
+              <p class="mt-1 text-xs leading-5 text-amber-800">可上传经修订的脱敏文件。系统会保留修订内容，按段落恢复可确认的脱敏文字；无法对应的段落会在右侧标黄。</p>
             </div>
 
             <label
@@ -489,7 +514,7 @@
               :class="{ 'opacity-50 cursor-not-allowed': !canRestore }"
               @click="restoreOriginalFile"
             >
-              一键恢复原文件内容
+              一键按修订内容复原
             </button>
           </div>
         </div>
@@ -569,6 +594,15 @@
                   <p class="page-number">第 {{ page.index }} / {{ pdfPages.length }} 页</p>
                   <div class="pdf-stage" :style="page.stageStyle">
                     <img :src="page.imageUrl" alt="PDF 页面预览" class="block h-full w-full" />
+                    <span v-if="restoreUnmatchedPages.includes(page.index)" class="restore-unmatched-page" title="该页存在无法一一对应的段落，未自动复原"></span>
+                    <template v-if="showOriginal">
+                      <span
+                        v-for="overlay in restorePdfOverlaysForPage(page)"
+                        :key="overlay.key"
+                        class="restore-pdf-text"
+                        :style="overlay.style"
+                      >{{ overlay.term }}</span>
+                    </template>
                     <div class="selectable-text-layer" aria-label="可选中复制的 PDF 文字">
                       <span v-for="(item, itemIndex) in page.textItems" :key="itemIndex" :style="item.textStyle" :data-text-scope="`pdf:${page.index}`" :data-text-node="itemIndex">{{ item.text }}</span>
                     </div>
@@ -652,6 +686,10 @@
           restorePayload: null,
           restoreStatus: "",
           restoreError: "",
+          restoreSourceWasImported: false,
+          restoreUnmatchedPages: [],
+          restorePdfOverlays: [],
+          restoreReport: null,
           originalFileSnapshot: null,
           showOriginal: false,
           imageUrl: "",
@@ -1025,12 +1063,15 @@
           this.restorePayload = null;
 
           const lowerName = file.name.toLowerCase();
+          this.restoreSourceWasImported = !lowerName.endsWith(".json");
+          this.restoreUnmatchedPages = [];
+          this.restoreReport = null;
           if (!lowerName.endsWith(".json")) {
             await this.importFile(file, { preserveRestore: true });
           }
 
           const embeddedPayload = await this.extractRestorePayload(file);
-          const payload = embeddedPayload || this.findStoredRestorePayloadForFile(file);
+          const payload = embeddedPayload || await this.findStoredRestorePayloadForFile(file);
           if (!payload) {
             this.restoreError = "未找到可复原数据。请上传本工具导出的可复原 DOCX/DOC/PDF，或对应的 .restore.json 复原包。若文件在其他浏览器或设备导出，请同时上传当时下载的复原包。";
             return;
@@ -1038,9 +1079,12 @@
 
           this.restorePayload = payload;
           this.rememberRestorePayload(payload, [file.name, this.fileName]);
-          this.restoreStatus = embeddedPayload
+          const source = embeddedPayload
             ? `已读取文件内置复原数据：${payload.sourceFileName || "原文件"}`
             : `已匹配浏览器本地复原记录：${payload.sourceFileName || "原文件"}`;
+          this.restoreStatus = this.restoreSourceWasImported
+            ? `${source}。已保留当前上传文件，点击按钮后将按段落复原。`
+            : source;
         },
 
         async importFile(file, options = {}) {
@@ -1209,6 +1253,12 @@
           this.restoredOccurrences = [];
           this.manualSelections = [];
           this.selectionDraft = null;
+          if (!options.preserveRestore) {
+            this.restoreSourceWasImported = false;
+            this.restoreUnmatchedPages = [];
+            this.restorePdfOverlays = [];
+            this.restoreReport = null;
+          }
           this.isDraggingFile = false;
           this.isDraggingRestoreFile = false;
 
@@ -1253,6 +1303,7 @@
               file: this.originalFileSnapshot,
               wordOriginalHtml: this.wordOriginalHtml,
               rawCopyText: this.rawCopyText,
+              pdfPageTexts: this.pdfPages.map(page => (page.textItems || []).map(item => item.text).join(" ")),
               templateRawHtml: this.mode === "template" ? this.templateRawHtml : ""
             },
             state: {
@@ -1287,18 +1338,103 @@
           }
         },
 
-        findStoredRestorePayloadForFile(file) {
+        async findStoredRestorePayloadForFile(file) {
           try {
             const stored = JSON.parse(localStorage.getItem("fileRedactorRestoreStore") || "{}");
             for (const alias of this.restoreNameAliases(file && file.name)) {
               const payload = stored[alias];
               if (this.validateRestorePayload(payload)) return payload;
             }
+
+            // Word/PDF applications may remove the embedded payload or change the
+            // filename. Compare the imported text with every local restore record.
+            const currentBlocks = this.currentRestoreMatchBlocks();
+            if (!currentBlocks.length) return null;
+
+            const candidates = [];
+            const seen = new Set();
+            for (const payload of Object.values(stored)) {
+              if (!this.validateRestorePayload(payload)) continue;
+              const identity = `${payload.sourceFileName || ""}|${payload.createdAt || ""}`;
+              if (seen.has(identity)) continue;
+              seen.add(identity);
+              const score = this.scoreRestorePayloadAgainstBlocks(currentBlocks, payload);
+              if (score) candidates.push({ payload, score });
+            }
+
+            candidates.sort((left, right) => right.score - left.score);
+            if (candidates[0] && candidates[0].score >= .45) return candidates[0].payload;
           } catch (error) {
             console.warn("restore store unavailable", error);
           }
 
           return null;
+        },
+
+        currentRestoreMatchBlocks() {
+          if (this.mode === "word" && this.wordOriginalHtml) {
+            const documentState = this.createRestoreDocument(this.wordOriginalHtml);
+            return this.restoreTextBlocks(documentState.root);
+          }
+
+          if (this.mode === "pdf" && this.pdfPages.length) {
+            return this.pdfPages
+              .map(page => ({
+                pageIndex: page.index,
+                text: (page.textItems || []).map(item => item.text).join(" ")
+              }))
+              .filter(block => block.text.trim());
+          }
+
+          return this.restorePlainTextBlocks(this.rawCopyText);
+        },
+
+        restorePayloadReferenceBlocks(payload) {
+          const original = payload.original || {};
+          if (payload.sourceKind === "pdf" || (Array.isArray(original.pdfPageTexts) && original.pdfPageTexts.length)) {
+            const pageTexts = original.pdfPageTexts && original.pdfPageTexts.length
+              ? original.pdfPageTexts
+              : this.restorePlainTextBlocks(original.rawCopyText);
+            return pageTexts.map(text => ({ text })).filter(block => block.text.trim());
+          }
+
+          if (original.wordOriginalHtml) {
+            const documentState = this.createRestoreDocument(original.wordOriginalHtml);
+            return this.restoreTextBlocks(documentState.root);
+          }
+
+          return this.restorePlainTextBlocks(original.rawCopyText || "").map(text => ({ text }));
+        },
+
+        scoreRestorePayloadAgainstBlocks(currentBlocks, payload) {
+          const referenceBlocks = this.restorePayloadReferenceBlocks(payload)
+            .map(block => ({ ...block, model: this.createRestoreMaskModel(block.text, this.restoreTermsFromPayload(payload)) }));
+          if (!referenceBlocks.length) return 0;
+
+          const terms = this.restoreTermsFromPayload(payload);
+          const used = new Set();
+          const scores = [];
+          for (const current of currentBlocks) {
+            let bestIndex = -1;
+            let best = 0;
+            for (const [index, reference] of referenceBlocks.entries()) {
+              if (used.has(index)) continue;
+              const score = this.restoreParagraphSimilarity(current.text, reference.model.redacted, terms);
+              if (score > best) {
+                best = score;
+                bestIndex = index;
+              }
+            }
+            if (bestIndex >= 0 && this.isReliableRestoreMatch(current.text, referenceBlocks[bestIndex].model.redacted, terms, best)) {
+              used.add(bestIndex);
+              scores.push(best);
+            }
+          }
+
+          if (!scores.length) return 0;
+          const coverage = scores.length / Math.max(Math.min(currentBlocks.length, referenceBlocks.length), 1);
+          const average = scores.reduce((total, score) => total + score, 0) / scores.length;
+          return average * .7 + coverage * .3;
         },
 
         restoreNameAliases(fileName) {
@@ -1355,19 +1491,30 @@
 
             if (lowerName.endsWith(".docx") && window.JSZip) {
               const zip = await JSZip.loadAsync(await file.arrayBuffer());
-              const restoreEntryName = Object.keys(zip.files).find(name => /file-redactor-restore\.(?:xml|json)$/i.test(name));
-              if (!restoreEntryName) return null;
-              const restoreText = await zip.file(restoreEntryName).async("string");
-              const xmlMatch = restoreText.match(/<payload>([A-Za-z0-9+/=]+)<\/payload>/);
-              const payload = restoreEntryName.toLowerCase().endsWith(".xml")
-                ? this.decodeRestorePayload(xmlMatch && xmlMatch[1])
-                : JSON.parse(restoreText);
-              return this.validateRestorePayload(payload) ? payload : null;
+              const restoreEntryNames = Object.keys(zip.files).filter(name =>
+                /file-redactor-restore\.(?:xml|json)$/i.test(name) ||
+                (/customXml\//i.test(name) && /restore/i.test(name))
+              );
+              for (const restoreEntryName of restoreEntryNames) {
+                const restoreText = await zip.file(restoreEntryName).async("string");
+                try {
+                  const xmlMatch = restoreText.match(/<payload(?:\s[^>]*)?>([\s\S]*?)<\/payload>/i);
+                  const encoded = xmlMatch && xmlMatch[1].replace(/\s+/g, "");
+                  const payload = encoded
+                    ? this.decodeRestorePayload(encoded)
+                    : JSON.parse(restoreText);
+                  if (this.validateRestorePayload(payload)) return payload;
+                } catch (entryError) {
+                  console.warn("restore entry unreadable", restoreEntryName, entryError);
+                }
+              }
+              return null;
             }
 
             if (lowerName.endsWith(".doc") || file.type === "application/msword") {
-              const text = await file.text();
-              const match = text.match(/FILE_REDACTOR_RESTORE:([A-Za-z0-9+/=]+)/);
+              const bytes = await file.arrayBuffer();
+              const text = new TextDecoder("windows-1252", { fatal: false }).decode(bytes);
+              const match = text.match(/FILE_REDACTOR_RESTORE\s*:\s*([A-Za-z0-9+/=]+)/i);
               if (!match) return null;
               const payload = this.decodeRestorePayload(match[1]);
               return this.validateRestorePayload(payload) ? payload : null;
@@ -1397,6 +1544,19 @@
           const snapshot = original.file;
 
           try {
+            if (this.restoreSourceWasImported && this.restoreEditedImport(payload)) {
+              this.applyRestoreState(payload);
+              this.showOriginal = true;
+              this.restorePayload = payload;
+              this.restoreFileName = this.restoreFileName || payload.sourceFileName || "";
+              this.restoreError = "";
+              this.copyStatus = this.restoreReport && this.restoreReport.unmatched
+                ? `已复原 ${this.restoreReport.restored} 处内容；${this.restoreReport.unmatched} 个段落未自动复原并已标黄。`
+                : `已在保留修订内容的基础上复原 ${this.restoreReport ? this.restoreReport.restored : 0} 处内容。`;
+              this.restoreStatus = this.copyStatus;
+              return;
+            }
+
             if (snapshot && snapshot.dataUrl) {
               const blob = await fetch(snapshot.dataUrl).then(response => response.blob());
               const restoredFile = new File([blob], snapshot.name || payload.sourceFileName || "原文件", {
@@ -1414,12 +1574,7 @@
               this.exportMode = "doc";
             }
 
-            if (payload.state) {
-              this.form = payload.state.form || { other: [""] };
-              this.disabledAutomaticTerms = payload.state.disabledAutomaticTerms || [];
-              this.restoredOccurrences = payload.state.restoredOccurrences || [];
-              this.manualSelections = payload.state.manualSelections || [];
-            }
+            this.applyRestoreState(payload);
 
             this.showOriginal = true;
             this.restorePayload = payload;
@@ -1431,6 +1586,303 @@
             console.error(error);
             this.restoreError = "复原失败。复原数据可能已被压缩、另存或第三方工具清除。";
           }
+        },
+
+        applyRestoreState(payload) {
+          if (!payload || !payload.state) return;
+          const state = payload.state;
+          this.form = state.form || { other: [""] };
+          if (!Array.isArray(this.form.other) || !this.form.other.length) this.form.other = [""];
+          this.disabledAutomaticTerms = state.disabledAutomaticTerms || [];
+          this.restoredOccurrences = state.restoredOccurrences || [];
+          this.manualSelections = state.manualSelections || [];
+        },
+
+        restoreEditedImport(payload) {
+          if (this.mode === "word") return this.restoreEditedWordImport(payload);
+          if (this.mode === "pdf") return this.restoreEditedPdfImport(payload);
+          return false;
+        },
+
+        restoreEditedWordImport(payload) {
+          const original = payload.original || {};
+          const referenceHtml = original.wordOriginalHtml || original.templateRawHtml;
+          if (!referenceHtml || !this.wordOriginalHtml) return false;
+
+          this.restorePdfOverlays = [];
+          const terms = this.restoreTermsFromPayload(payload);
+          const currentDocument = this.createRestoreDocument(this.wordOriginalHtml);
+          const referenceDocument = this.createRestoreDocument(referenceHtml);
+          const currentBlocks = this.restoreTextBlocks(currentDocument.root);
+          const referenceBlocks = this.restoreTextBlocks(referenceDocument.root)
+            .map(block => ({ ...block, model: this.createRestoreMaskModel(block.text, terms) }));
+
+          if (!currentBlocks.length || !referenceBlocks.length) return false;
+
+          const report = this.matchRestoreBlocks(currentBlocks, referenceBlocks, terms, block => {
+            block.element.classList.remove("restore-unmatched-paragraph");
+          }, block => {
+            block.element.classList.add("restore-unmatched-paragraph");
+            block.element.title = "该段落未能与脱敏前内容一一对应，已保留当前修订内容。";
+          });
+
+          this.wordOriginalHtml = currentDocument.root.innerHTML;
+          this.rawCopyText = this.stripHtml(this.wordOriginalHtml);
+          this.restoreUnmatchedPages = [];
+          this.restoreReport = report;
+          return true;
+        },
+
+        restoreEditedPdfImport(payload) {
+          const original = payload.original || {};
+          const originalText = original.rawCopyText || this.stripHtml(original.wordOriginalHtml || original.templateRawHtml || "");
+          if (!originalText || !this.pdfPages.length) return false;
+
+          this.restorePdfOverlays = [];
+          const terms = this.restoreTermsFromPayload(payload);
+          const currentBlocks = this.pdfPages.map((page, index) => ({
+            pageIndex: page.index,
+            text: (page.textItems || []).map(item => item.text).join(" ")
+          })).filter(block => block.text.trim());
+          const sourcePages = Array.isArray(original.pdfPageTexts) && original.pdfPageTexts.length
+            ? original.pdfPageTexts
+            : this.restorePlainTextBlocks(originalText);
+          const referenceBlocks = sourcePages
+            .map(text => ({ text, model: this.createRestoreMaskModel(text, terms) }))
+            .filter(block => block.text.trim());
+
+          if (!currentBlocks.length || !referenceBlocks.length) return false;
+
+          const unmatchedPages = [];
+          let restoredOverlayCount = 0;
+          const report = this.matchRestoreBlocks(currentBlocks, referenceBlocks, terms, (block, reference) => {
+            restoredOverlayCount += this.buildPdfRestoreOverlays(block.pageIndex, reference, terms);
+          }, block => {
+            unmatchedPages.push(block.pageIndex);
+          });
+          report.restored = restoredOverlayCount;
+          this.restoreUnmatchedPages = [...new Set(unmatchedPages)];
+          this.restoreReport = report;
+          return true;
+        },
+
+        restorePdfOverlaysForPage(page) {
+          return this.restorePdfOverlays.filter(item => item.pageIndex === page.index);
+        },
+
+        buildPdfRestoreOverlays(pageIndex, reference, terms) {
+          const page = this.pdfPages.find(item => item.index === pageIndex);
+          if (!page || !reference) return 0;
+          let valueIndex = 0;
+          const values = reference.model.values || [];
+          const maskPattern = /【】|［］|\[\s*\]|(?:\*|＊){3,}/g;
+          let overlayCount = 0;
+          for (const [itemIndex, item] of (page.textItems || []).entries()) {
+            const text = String(item.text || "");
+            let match;
+            maskPattern.lastIndex = 0;
+            while ((match = maskPattern.exec(text)) !== null) {
+              const term = values[valueIndex++];
+              if (term) {
+                this.restorePdfOverlays.push(this.createRestorePdfOverlay(pageIndex, item, itemIndex, term, match.index, match[0].length));
+                overlayCount += 1;
+              }
+            }
+
+            if (!this.countRestoreMasks(text)) {
+              for (const term of terms) {
+                let termIndex = text.indexOf(term);
+                while (termIndex >= 0) {
+                  this.restorePdfOverlays.push(this.createRestorePdfOverlay(pageIndex, item, itemIndex, term, termIndex, term.length));
+                  overlayCount += 1;
+                  termIndex = text.indexOf(term, termIndex + term.length);
+                }
+              }
+            }
+          }
+          return overlayCount;
+        },
+
+        createRestorePdfOverlay(pageIndex, item, itemIndex, term, start, length) {
+          const charWidth = item.width / Math.max(String(item.text || "").length, 1);
+          return {
+            key: `restore-pdf:${pageIndex}:${itemIndex}:${start}:${term}`,
+            pageIndex,
+            term,
+            style: {
+              left: `${Math.max(item.left + charWidth * start - 1, 0)}px`,
+              top: `${Math.max(item.top - 1, 0)}px`,
+              width: `${Math.max(charWidth * length + 3, 18)}px`,
+              height: `${Math.max(item.height + 3, 14)}px`,
+              fontSize: `${Math.max(item.height, 10)}px`
+            }
+          };
+        },
+
+        createRestoreDocument(html) {
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(`<div>${html || ""}</div>`, "text/html");
+          return { doc, root: doc.body.firstElementChild };
+        },
+
+        restoreTextBlocks(root) {
+          if (!root) return [];
+          const selector = "p, li, td, th, h1, h2, h3, h4, h5, h6, blockquote";
+          const candidates = Array.from(root.querySelectorAll(selector));
+          const blocks = candidates.filter(element => !element.querySelector(selector));
+          const elements = blocks.length ? blocks : [root];
+          return elements
+            .map(element => ({ element, text: (element.textContent || "").trim() }))
+            .filter(block => block.text);
+        },
+
+        restorePlainTextBlocks(text) {
+          return String(text || "")
+            .split(/\n\s*\n|\r?\n/)
+            .map(item => item.trim())
+            .filter(Boolean);
+        },
+
+        restoreTermsFromPayload(payload) {
+          const original = payload.original || {};
+          const state = payload.state || {};
+          const sourceText = original.rawCopyText || this.stripHtml(original.wordOriginalHtml || original.templateRawHtml || "");
+          const disabled = new Set(state.disabledAutomaticTerms || []);
+          const manualValues = ((state.form && state.form.other) || [])
+            .flatMap(value => String(value || "").split(/[\n,，;；、\s]+/));
+          const selectedValues = (state.manualSelections || []).map(item => item && item.term);
+          return [...new Set([
+            ...this.detectSensitiveTerms(sourceText).filter(term => !disabled.has(term)),
+            ...manualValues,
+            ...selectedValues
+          ].map(item => String(item || "").trim()).filter(item => item.length > 0))]
+            .sort((left, right) => right.length - left.length);
+        },
+
+        createRestoreMaskModel(text, terms) {
+          const source = String(text || "");
+          if (!terms.length) return { redacted: source, values: [] };
+          const pattern = new RegExp(terms.map(this.escapeRegExp).join("|"), "g");
+          const values = [];
+          const redacted = source.replace(pattern, match => {
+            values.push(match);
+            return "【】";
+          });
+          return { redacted, values };
+        },
+
+        matchRestoreBlocks(currentBlocks, referenceBlocks, terms, onMatched, onUnmatched) {
+          const usedReferenceIndexes = new Set();
+          const report = { total: currentBlocks.length, matched: 0, restored: 0, unmatched: 0 };
+
+          for (const current of currentBlocks) {
+            let bestIndex = -1;
+            let bestScore = 0;
+            for (const [index, reference] of referenceBlocks.entries()) {
+              if (usedReferenceIndexes.has(index)) continue;
+              const score = this.restoreParagraphSimilarity(current.text, reference.model.redacted, terms);
+              if (score > bestScore) {
+                bestScore = score;
+                bestIndex = index;
+              }
+            }
+
+            if (bestIndex < 0 || !this.isReliableRestoreMatch(current.text, referenceBlocks[bestIndex].model.redacted, terms, bestScore)) {
+              report.unmatched += 1;
+              if (onUnmatched) onUnmatched(current);
+              continue;
+            }
+
+            const reference = referenceBlocks[bestIndex];
+            usedReferenceIndexes.add(bestIndex);
+            const maskCount = this.countRestoreMasks(current.text);
+            if (maskCount && maskCount !== reference.model.values.length) {
+              report.unmatched += 1;
+              if (onUnmatched) onUnmatched(current);
+              continue;
+            }
+
+            report.matched += 1;
+            if (onMatched) onMatched(current, reference);
+            if (maskCount && current.element) report.restored += this.restoreMaskedTextInElement(current.element, reference.model.values);
+          }
+
+          return report;
+        },
+
+        normalizeRestoreText(value, terms) {
+          let normalized = String(value || "");
+          for (const term of terms || []) {
+            normalized = normalized.replace(new RegExp(this.escapeRegExp(term), "g"), " MASK ");
+          }
+          return normalized
+            .replace(/【】|［］|\[\s*\]|(?:\*|＊){3,}/g, " MASK ")
+            .replace(/[\s，,。.;；:：、!！?？\"“”'‘’（）()\[\]【】<>《》\-—_]/g, "")
+            .toLowerCase();
+        },
+
+        restoreParagraphSimilarity(currentText, referenceText, terms) {
+          const current = this.normalizeRestoreText(currentText, terms);
+          const reference = this.normalizeRestoreText(referenceText, terms);
+          if (!current || !reference) return 0;
+          if (current === reference) return 1;
+          if (current.includes(reference) || reference.includes(current)) {
+            return Math.min(current.length, reference.length) / Math.max(current.length, reference.length);
+          }
+          const grams = value => {
+            const map = new Map();
+            for (let index = 0; index < Math.max(value.length - 1, 1); index++) {
+              const gram = value.length > 1 ? value.slice(index, index + 2) : value;
+              map.set(gram, (map.get(gram) || 0) + 1);
+            }
+            return map;
+          };
+          const left = grams(current);
+          const right = grams(reference);
+          let common = 0;
+          for (const [gram, count] of left) common += Math.min(count, right.get(gram) || 0);
+          const dice = (2 * common) / (Math.max(current.length - 1, 1) + Math.max(reference.length - 1, 1));
+          return Math.max(dice, this.restoreAnchorCoverage(current, reference));
+        },
+
+        restoreAnchorCoverage(current, reference) {
+          const anchors = reference
+            .split("MASK")
+            .map(anchor => anchor.trim())
+            .filter(anchor => anchor.length >= 6);
+          if (!anchors.length) return 0;
+          const matchedLength = anchors
+            .filter(anchor => current.includes(anchor))
+            .reduce((total, anchor) => total + anchor.length, 0);
+          const totalLength = anchors.reduce((total, anchor) => total + anchor.length, 0);
+          return matchedLength / Math.max(totalLength, 1);
+        },
+
+        isReliableRestoreMatch(currentText, referenceText, terms, score) {
+          const current = this.normalizeRestoreText(currentText, terms);
+          const reference = this.normalizeRestoreText(referenceText, terms);
+          const shortText = Math.min(current.length, reference.length) < 14;
+          const anchorCoverage = this.restoreAnchorCoverage(current, reference);
+          const minimumLength = Math.min(current.length, reference.length);
+          return minimumLength >= (shortText ? 3 : 8) && (
+            score >= (shortText ? .82 : .52) ||
+            (!shortText && anchorCoverage >= .28)
+          );
+        },
+
+        countRestoreMasks(value) {
+          return (String(value || "").match(/【】|［］|\[\s*\]|(?:\*|＊){3,}/g) || []).length;
+        },
+
+        restoreMaskedTextInElement(element, values) {
+          const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+          const nodes = [];
+          while (walker.nextNode()) nodes.push(walker.currentNode);
+          let index = 0;
+          for (const node of nodes) {
+            node.nodeValue = (node.nodeValue || "").replace(/【】|［］|\[\s*\]|(?:\*|＊){3,}/g, () => values[index++] || "【】");
+          }
+          return index;
         },
 
         detectSensitiveTerms(sourceText) {
