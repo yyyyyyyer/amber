@@ -1681,7 +1681,7 @@
             const entry = zip.file(name);
             if (!entry) continue;
             const xml = await entry.async("string");
-            zip.file(name, this.redactDocxXml(xml));
+            zip.file(name, this.redactDocxXml(xml, name === "word/document.xml"));
           }
 
           zip.file("customXml/file-redactor-restore.xml", `<restore><payload>${this.encodeRestorePayload(this.buildRestorePayload("docx"))}</payload></restore>`);
@@ -1694,18 +1694,106 @@
           this.copyStatus = "已导出保留原 Word 格式的 DOCX 脱敏文件，并内置一键复原数据。";
         },
 
-        redactDocxXml(xml) {
-          if (!this.activeTerms.length) return xml;
-          const pattern = new RegExp(this.activeTerms.map(this.escapeRegExp).join("|"), "g");
+        redactDocxXml(xml, includeManual = false) {
+          const manualRanges = includeManual ? this.htmlManualExportRanges(this.wordOriginalHtml, "word") : [];
+          if (!this.activeTerms.length && !manualRanges.length) return xml;
+
+          const pattern = this.activeTerms.length ? new RegExp(this.activeTerms.map(this.escapeRegExp).join("|"), "g") : null;
           const occurrenceCounts = {};
+          let globalOffset = 0;
+
           return xml.replace(/(<w:t(?:\s[^>]*)?>)([\s\S]*?)(<\/w:t>)/g, (match, opening, text, closing) => {
-            pattern.lastIndex = 0;
-            const redactedText = text.replace(pattern, term => {
-              const key = this.nextOccurrenceKey("word", term, occurrenceCounts);
-              return this.isOccurrenceRestored(key) ? term : "【】";
-            });
-            return `${opening}${redactedText}${closing}`;
+            const decodedText = this.unescapeXmlText(text);
+            const nodeStart = globalOffset;
+            const nodeEnd = nodeStart + decodedText.length;
+            globalOffset = nodeEnd;
+
+            const ranges = [];
+            let matchResult;
+
+            if (pattern) {
+              pattern.lastIndex = 0;
+              while ((matchResult = pattern.exec(decodedText)) !== null) {
+                const key = this.nextOccurrenceKey("word", matchResult[0], occurrenceCounts);
+                if (!this.isOccurrenceRestored(key)) {
+                  ranges.push({
+                    start: matchResult.index,
+                    end: matchResult.index + matchResult[0].length,
+                    priority: 1
+                  });
+                }
+              }
+            }
+
+            for (const range of manualRanges) {
+              if (range.end <= nodeStart || range.start >= nodeEnd) continue;
+              ranges.push({
+                start: Math.max(range.start - nodeStart, 0),
+                end: Math.min(range.end - nodeStart, decodedText.length),
+                priority: 2
+              });
+            }
+
+            if (!ranges.length) return match;
+
+            ranges.sort((left, right) => left.start - right.start || right.priority - left.priority);
+            let lastIndex = 0;
+            let redactedText = "";
+
+            for (const range of ranges) {
+              if (range.end <= lastIndex || range.end <= range.start) continue;
+              if (range.start > lastIndex) redactedText += decodedText.slice(lastIndex, range.start);
+              redactedText += "【】";
+              lastIndex = range.end;
+            }
+
+            redactedText += decodedText.slice(lastIndex);
+            return `${opening}${this.escapeXmlText(redactedText)}${closing}`;
           });
+        },
+
+        htmlManualExportRanges(sourceHtml, scope) {
+          const activeManualSelections = this.manualSelections.filter(selection => selection.scope === scope && selection.enabled);
+          if (!sourceHtml || !activeManualSelections.length) return [];
+
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(`<div>${sourceHtml}</div>`, "text/html");
+          const root = doc.body.firstElementChild;
+          const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+          const offsets = [];
+          let cursor = 0;
+
+          while (walker.nextNode()) {
+            const text = walker.currentNode.nodeValue || "";
+            offsets.push({ start: cursor, end: cursor + text.length });
+            cursor += text.length;
+          }
+
+          return activeManualSelections
+            .map(selection => {
+              const nodeOffset = offsets[selection.nodeIndex];
+              if (!nodeOffset) return null;
+              const start = nodeOffset.start + selection.start;
+              return {
+                start,
+                end: start + selection.length
+              };
+            })
+            .filter(Boolean)
+            .sort((left, right) => left.start - right.start);
+        },
+
+        unescapeXmlText(value) {
+          const textarea = document.createElement("textarea");
+          textarea.innerHTML = value || "";
+          return textarea.value;
+        },
+
+        escapeXmlText(value) {
+          return String(value || "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
         },
 
         exportDoc() {
