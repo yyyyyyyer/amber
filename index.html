@@ -2242,61 +2242,100 @@
           const occurrenceCounts = {};
           let globalOffset = 0;
 
-          return xml.replace(/(<w:t(?:\s[^>]*)?>)([\s\S]*?)(<\/w:t>)/g, (match, opening, text, closing) => {
-            const decodedText = this.unescapeXmlText(text);
+          const rangesForText = text => {
             const nodeStart = globalOffset;
-            const nodeEnd = nodeStart + decodedText.length;
+            const nodeEnd = nodeStart + text.length;
             globalOffset = nodeEnd;
-
             const ranges = [];
             let matchResult;
 
             if (pattern) {
               pattern.lastIndex = 0;
-              while ((matchResult = pattern.exec(decodedText)) !== null) {
+              while ((matchResult = pattern.exec(text)) !== null) {
                 const key = this.nextOccurrenceKey("word", matchResult[0], occurrenceCounts);
                 if (!this.isOccurrenceRestored(key)) {
-                  ranges.push({
-                    start: matchResult.index,
-                    end: matchResult.index + matchResult[0].length,
-                    term: matchResult[0],
-                    priority: 1
-                  });
+                  ranges.push({ start: matchResult.index, end: matchResult.index + matchResult[0].length, term: matchResult[0], priority: 1 });
                 }
               }
             }
 
             for (const range of manualRanges) {
               if (range.end <= nodeStart || range.start >= nodeEnd) continue;
-              ranges.push({
-                start: Math.max(range.start - nodeStart, 0),
-                end: Math.min(range.end - nodeStart, decodedText.length),
-                term: decodedText.slice(Math.max(range.start - nodeStart, 0), Math.min(range.end - nodeStart, decodedText.length)),
-                priority: 2
-              });
+              const start = Math.max(range.start - nodeStart, 0);
+              const end = Math.min(range.end - nodeStart, text.length);
+              ranges.push({ start, end, term: text.slice(start, end), priority: 2 });
             }
 
-            if (!ranges.length) return match;
+            return ranges.sort((left, right) => left.start - right.start || right.priority - left.priority);
+          };
 
-            ranges.sort((left, right) => left.start - right.start || right.priority - left.priority);
+          const segmentsForText = (text, ranges) => {
+            const segments = [];
             let lastIndex = 0;
-            let redactedText = "";
-
             for (const range of ranges) {
               if (range.end <= lastIndex || range.end <= range.start) continue;
-              if (range.start > lastIndex) redactedText += decodedText.slice(lastIndex, range.start);
-              redactedText += this.wordMaskText(range.term || decodedText.slice(range.start, range.end));
+              if (range.start > lastIndex) segments.push({ text: text.slice(lastIndex, range.start), masked: false });
+              segments.push({ text: range.term || text.slice(range.start, range.end), masked: true });
               lastIndex = range.end;
             }
+            if (lastIndex < text.length) segments.push({ text: text.slice(lastIndex), masked: false });
+            return segments;
+          };
 
-            redactedText += decodedText.slice(lastIndex);
-            return `${opening}${this.escapeXmlText(redactedText)}${closing}`;
-          }).replace(/<w:r(\s[^>]*)?>([\s\S]*?<w:t(?:\s[^>]*)?>\*+密\*+<\/w:t>[\s\S]*?)<\/w:r>/g, (match, attributes = "", runContent) => {
-            if (/<w:rPr\b/.test(runContent)) {
-              return `<w:r${attributes}>${runContent.replace(/<w:rPr(\s[^>]*)?>/, `<w:rPr$1><w:shd w:val="clear" w:color="auto" w:fill="BFBFBF"/>`)}</w:r>`;
+          return xml.replace(/<w:r(\s[^>]*)?>([\s\S]*?)<\/w:r>/g, (runMatch, attributes = "", runContent) => {
+            const textMatches = [...runContent.matchAll(/(<w:t(?:\s[^>]*)?>)([\s\S]*?)(<\/w:t>)/g)];
+            if (textMatches.length !== 1) {
+              let hasMaskedText = false;
+              const updatedContent = runContent.replace(/(<w:t(?:\s[^>]*)?>)([\s\S]*?)(<\/w:t>)/g, (nodeMatch, opening, text, closing) => {
+                const decodedText = this.unescapeXmlText(text);
+                const ranges = rangesForText(decodedText);
+                if (!ranges.length) return nodeMatch;
+                hasMaskedText = true;
+                const redactedText = segmentsForText(decodedText, ranges)
+                  .map(segment => segment.masked ? this.wordMaskText(segment.text) : segment.text)
+                  .join("");
+                return `${opening}${this.escapeXmlText(redactedText)}${closing}`;
+              });
+              return hasMaskedText ? `<w:r${attributes}>${this.docxMaskRunProperties(updatedContent)}</w:r>` : runMatch;
             }
-            return `<w:r${attributes}><w:rPr><w:shd w:val="clear" w:color="auto" w:fill="BFBFBF"/></w:rPr>${runContent}</w:r>`;
+
+            const textMatch = textMatches[0];
+            const opening = textMatch[1];
+            const decodedText = this.unescapeXmlText(textMatch[2]);
+            const closing = textMatch[3];
+            const ranges = rangesForText(decodedText);
+            if (!ranges.length) return runMatch;
+
+            const segments = segmentsForText(decodedText, ranges);
+            const beforeText = runContent.slice(0, textMatch.index);
+            const afterText = runContent.slice(textMatch.index + textMatch[0].length);
+            const isSimpleTextRun = /^\s*(?:<w:rPr(?:\s[^>]*)?>[\s\S]*?<\/w:rPr>\s*)?$/.test(beforeText) && /^\s*$/.test(afterText);
+
+            if (!isSimpleTextRun) {
+              const redactedText = segments.map(segment => segment.masked ? this.wordMaskText(segment.text) : segment.text).join("");
+              const shadedContent = this.docxMaskRunProperties(runContent.replace(textMatch[0], `${opening}${this.escapeXmlText(redactedText)}${closing}`));
+              return `<w:r${attributes}>${shadedContent}</w:r>`;
+            }
+
+            return segments
+              .filter(segment => segment.text)
+              .map(segment => {
+                const textValue = segment.masked ? this.wordMaskText(segment.text) : segment.text;
+                const textOpening = /^\s|\s$/.test(textValue) && !/\bxml:space\s*=/.test(opening)
+                  ? opening.replace(/>$/, ' xml:space="preserve">')
+                  : opening;
+                const properties = segment.masked ? this.docxMaskRunProperties(beforeText) : beforeText;
+                return `<w:r${attributes}>${properties}${textOpening}${this.escapeXmlText(textValue)}${closing}</w:r>`;
+              })
+              .join("");
           });
+        },
+
+        docxMaskRunProperties(properties) {
+          const shading = '<w:shd w:val="clear" w:color="auto" w:fill="BFBFBF"/>';
+          if (!properties || !/<w:rPr\b/.test(properties)) return `<w:rPr>${shading}</w:rPr>`;
+          if (/<w:shd\b[^>]*\/>/.test(properties)) return properties.replace(/<w:shd\b[^>]*\/>/, shading);
+          return properties.replace(/<w:rPr(\s[^>]*)?>/, `<w:rPr$1>${shading}`);
         },
 
         htmlManualExportRanges(sourceHtml, scope) {
