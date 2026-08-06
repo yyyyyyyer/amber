@@ -589,7 +589,7 @@
         </div>
 
         <div class="flex flex-1 justify-center overflow-auto px-8 py-8">
-          <section id="paper" class="a4-paper" :class="{ 'pdf-paper': mode === 'pdf' }" @click="handlePreviewClick" @mouseup="captureSelection">
+          <section v-if="mode !== 'empty'" id="paper" class="a4-paper" :class="{ 'pdf-paper': mode === 'pdf' }" @click="handlePreviewClick" @mouseup="captureSelection">
             <div v-if="mode === 'template'" class="document-body" v-html="templatePreviewHtml"></div>
 
             <div v-else-if="mode === 'word'" class="docx-preview document-body" v-html="wordPreviewHtml"></div>
@@ -2147,8 +2147,8 @@
 
         wordMaskText(value) {
           const length = Math.max(Array.from(String(value || "")).length, 1);
-          const leadingStars = Math.ceil(length / 2);
-          return `${"*".repeat(leadingStars)}密${"*".repeat(length - leadingStars)}`;
+          const leadingStars = Math.ceil((length - 1) / 2);
+          return `${"*".repeat(leadingStars)}密${"*".repeat(length - leadingStars - 1)}`;
         },
 
         redactPlainText(sourceText) {
