@@ -163,6 +163,15 @@
       cursor: pointer;
     }
 
+    .word-redaction-token {
+      min-width: 0;
+      border-color: #9ca3af;
+      background: #d1d5db;
+      box-shadow: inset 0 -1px 0 rgba(31, 41, 55, .18), 0 1px 2px rgba(15, 23, 42, .16);
+      color: #111827;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
     .restored-token {
       cursor: pointer;
       text-decoration: underline dashed #60a5fa;
@@ -277,9 +286,9 @@
       z-index: 4;
       min-width: 22px;
       min-height: 12px;
-      border: 1px solid rgba(14, 165, 233, .25);
-      background: #ffffff;
-      box-shadow: 0 0 0 1px rgba(255,255,255,.75);
+      border: 1px solid #000000;
+      background: #000000;
+      box-shadow: none;
       cursor: pointer;
     }
 
@@ -440,7 +449,7 @@
               >{{ term }}</button>
             </div>
             <p v-else class="rounded-md bg-slate-50 px-3 py-3 text-xs font-bold leading-5 text-slate-500">
-              暂未识别到敏感要素，导入文件或使用默认模板后会自动扫描。
+              导入文件后开始自动识别。
             </p>
           </div>
 
@@ -674,9 +683,9 @@
     createApp({
       data() {
         return {
-          mode: "template",
+          mode: "empty",
           fileName: "",
-          fileKind: "template",
+          fileKind: "empty",
           fileError: "",
           copyStatus: "",
           exportMode: "pdf",
@@ -743,14 +752,15 @@
         },
 
         previewTitle() {
+          if (this.mode === "empty") return "文件预览";
           if (this.mode === "template") return "律师函模板演示";
           if (this.mode === "word") return "Word 文档脱敏预览";
-          if (this.mode === "pdf") return "PDF 白色遮罩预览";
+          if (this.mode === "pdf") return "PDF 黑色遮罩预览";
           return "图片文件预览";
         },
 
         previewSubtitle() {
-          if (!this.fileName) return "未导入文件时，右侧展示标准催款律师函模板。";
+          if (!this.fileName) return "导入文件后在此预览脱敏结果。";
           return `正在预览：${this.fileName}`;
         },
 
@@ -786,7 +796,7 @@
         },
 
         canCopy() {
-          return Boolean(this.rawCopyText || this.mode === "template");
+          return Boolean(this.rawCopyText);
         },
 
         canRestore() {
@@ -797,12 +807,11 @@
           if (this.rawCopyText) return this.rawCopyText;
           if (this.fileName) return "";
           if (this.mode === "word") return this.stripHtml(this.wordOriginalHtml);
-          return this.stripHtml(this.templateRawHtml);
+          return "";
         },
 
         redactedCopyText() {
-          const source = this.rawCopyText || this.stripHtml(this.templateRawHtml);
-          return this.redactPlainText(source);
+          return this.redactPlainText(this.rawCopyText);
         },
 
         templateRawHtml() {
@@ -844,6 +853,7 @@
         },
 
         redactionCount() {
+          if (this.mode === "empty") return 0;
           if (this.mode === "pdf") return this.pdfMaskCount;
           if (this.mode === "image") return this.imageMasks.filter(mask => mask.manual ? mask.enabled : !this.isOccurrenceRestored(mask.key)).length;
 
@@ -1132,8 +1142,8 @@
             this.fileError = "暂不支持该文件类型，请选择 PDF、DOCX、DOC、PNG 或 JPG。";
           } catch (error) {
             console.error(error);
-            this.mode = "template";
-            this.fileKind = "template";
+            this.mode = "empty";
+            this.fileKind = "empty";
             this.exportMode = "pdf";
             this.pdfLoading = false;
             this.fileError = "文件解析失败，请确认文件未加密或损坏。";
@@ -1232,9 +1242,9 @@
 
         clearFile(resetInput = true, options = {}) {
           if (this.imageUrl) URL.revokeObjectURL(this.imageUrl);
-          this.mode = "template";
+          this.mode = "empty";
           this.fileName = "";
-          this.fileKind = "template";
+          this.fileKind = "empty";
           this.fileError = "";
           this.copyStatus = "";
           this.exportMode = "pdf";
@@ -2098,8 +2108,10 @@
 
               const restored = range.manual ? !range.enabled : this.isOccurrenceRestored(range.key);
               const token = doc.createElement(restored ? "span" : "mark");
-              token.className = restored ? "restored-token" : "redaction-token";
-              token.textContent = restored ? range.term : "【】";
+              token.className = restored
+                ? "restored-token"
+                : scope === "word" ? "redaction-token word-redaction-token" : "redaction-token";
+              token.textContent = restored ? range.term : scope === "word" ? this.wordMaskText(range.term) : "【】";
               token.dataset.redactionKey = range.key;
               token.dataset.redactionTerm = range.term;
               token.dataset.redactionType = range.manual ? "manual" : "automatic";
@@ -2131,6 +2143,12 @@
           const count = counts[term] || 0;
           counts[term] = count + 1;
           return `${scope}:${encodeURIComponent(term)}:${count}`;
+        },
+
+        wordMaskText(value) {
+          const length = Math.max(Array.from(String(value || "")).length, 1);
+          const leadingStars = Math.ceil(length / 2);
+          return `${"*".repeat(leadingStars)}密${"*".repeat(length - leadingStars)}`;
         },
 
         redactPlainText(sourceText) {
@@ -2241,6 +2259,7 @@
                   ranges.push({
                     start: matchResult.index,
                     end: matchResult.index + matchResult[0].length,
+                    term: matchResult[0],
                     priority: 1
                   });
                 }
@@ -2252,6 +2271,7 @@
               ranges.push({
                 start: Math.max(range.start - nodeStart, 0),
                 end: Math.min(range.end - nodeStart, decodedText.length),
+                term: decodedText.slice(Math.max(range.start - nodeStart, 0), Math.min(range.end - nodeStart, decodedText.length)),
                 priority: 2
               });
             }
@@ -2265,12 +2285,17 @@
             for (const range of ranges) {
               if (range.end <= lastIndex || range.end <= range.start) continue;
               if (range.start > lastIndex) redactedText += decodedText.slice(lastIndex, range.start);
-              redactedText += "【】";
+              redactedText += this.wordMaskText(range.term || decodedText.slice(range.start, range.end));
               lastIndex = range.end;
             }
 
             redactedText += decodedText.slice(lastIndex);
             return `${opening}${this.escapeXmlText(redactedText)}${closing}`;
+          }).replace(/<w:r(\s[^>]*)?>([\s\S]*?<w:t(?:\s[^>]*)?>\*+密\*+<\/w:t>[\s\S]*?)<\/w:r>/g, (match, attributes = "", runContent) => {
+            if (/<w:rPr\b/.test(runContent)) {
+              return `<w:r${attributes}>${runContent.replace(/<w:rPr(\s[^>]*)?>/, `<w:rPr$1><w:shd w:val="clear" w:color="auto" w:fill="BFBFBF"/>`)}</w:r>`;
+            }
+            return `<w:r${attributes}><w:rPr><w:shd w:val="clear" w:color="auto" w:fill="BFBFBF"/></w:rPr>${runContent}</w:r>`;
           });
         },
 
@@ -2320,11 +2345,16 @@
 
         exportDoc() {
           const scope = this.mode === "word" ? "word" : "template";
+          const sourceHtml = this.wordOriginalHtml || (this.mode === "template" ? this.templateRawHtml : "");
+          if (!sourceHtml) {
+            this.fileError = "请先导入需要脱敏的文件。";
+            return;
+          }
           const outputName = `${this.outputBaseName()}.doc`;
           const restorePayload = this.buildRestorePayload("doc");
           this.rememberRestorePayload(restorePayload, [outputName]);
           const payloadComment = `<!--FILE_REDACTOR_RESTORE:${this.encodeRestorePayload(restorePayload)}-->`;
-          const html = `${this.buildExportHtml(this.redactHtml(this.wordOriginalHtml || this.templateRawHtml, scope))}\n${payloadComment}`;
+          const html = `${this.buildExportHtml(this.redactHtml(sourceHtml, scope))}\n${payloadComment}`;
           const blob = new Blob([html], { type: "application/msword;charset=utf-8" });
           this.downloadBlob(blob, outputName);
           this.copyStatus = "已导出 DOC 脱敏文件，并内置一键复原数据。";
@@ -2349,6 +2379,7 @@
                 table { width: 100%; border-collapse: collapse; }
                 td, th { border: 1px solid #cbd5e1; padding: 8px; }
                 .redaction-token { background: #fff2bd; color: #7c2d12; font-weight: 800; }
+                .word-redaction-token { background: #d1d5db; color: #111827; box-shadow: 0 1px 2px rgba(15,23,42,.16); font-family: Consolas, monospace; }
               </style>
             </head>
             <body>${bodyHtml}</body>
